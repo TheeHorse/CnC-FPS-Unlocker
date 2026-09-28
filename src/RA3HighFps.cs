@@ -13,6 +13,7 @@ using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Drawing;
+using System.Globalization;
 using System.IO;
 using System.Linq;
 using System.Runtime.InteropServices;
@@ -53,14 +54,21 @@ static class Program
         int fps = ReadIniFps(Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "RA3HighFps.ini"), 120);
         // Particles simulate at their native 30 Hz, like the stock game.
         bool throttlePfx = true;
-        string check = null, game = null;
+        // Experimental: also redirect the other fps reads (animation timing). ini: extra=all
+        string extra = ReadIni(Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "RA3HighFps.ini"), "extra");
+        // Experimental: also update cached "frames per logic tick" copies. ini: ticks=on
+        bool ticks = ReadIni(Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "RA3HighFps.ini"), "ticks") == "on";
+        string check = null, game = null, lang = null;
         var pass = new List<string>();
         for (int i = 0; i < argv.Length; i++)
         {
             if (argv[i] == "--fps" && i + 1 < argv.Length) fps = int.Parse(argv[++i]);
             else if (argv[i] == "--check" && i + 1 < argv.Length) check = argv[++i];
             else if (argv[i] == "--pfx" && i + 1 < argv.Length) throttlePfx = argv[++i] != "off";
+            else if (argv[i] == "--extra" && i + 1 < argv.Length) extra = argv[++i];
+            else if (argv[i] == "--ticks" && i + 1 < argv.Length) ticks = argv[++i] == "on";
             else if (argv[i] == "--game" && i + 1 < argv.Length) game = argv[++i];
+            else if (argv[i] == "--lang" && i + 1 < argv.Length) lang = argv[++i].ToLowerInvariant();   // e.g. --lang german
             else if (argv[i] == "--play") continue;   // shortcut to the installed copy: just launch this folder's game
             // apitrace's d3d9.dll wrapper (when present in the exe folder) writes its trace here.
             else if (argv[i] == "--trace" && i + 1 < argv.Length) Environment.SetEnvironmentVariable("TRACE_FILE", argv[++i]);
@@ -84,6 +92,10 @@ static class Program
             string report = string.Format("render_fps @0x{0:X} = {1}, logic_fps = {2}\nsites: {3}\nparticle sim call @0x{4:X} (target 0x{5:X})\n",
                 cr, BitConverter.ToInt32(c, (int)(cr - ImageBase)), BitConverter.ToInt32(c, (int)(cr - 4 - ImageBase)),
                 string.Join(", ", cs.Select(s => "0x" + s.ToString("X"))), ps, pm);
+            var cx = FindExtraSites(c, cr, cr - 4, cs);
+            report += "tick stores: " + string.Join(", ", FindTickStores(c, cr, cr - 4).Select(s => "0x" + s.ToString("X"))) + "\n";
+            report += string.Format("extra ({0}):\n{1}\n", cx.Count,
+                string.Join("\n", cx.Select((s, k) => k + ": 0x" + s.ToString("X") + "  " + Hex(c, (int)(s - ImageBase) - 3, 12))));
             File.WriteAllText(check + ".hfr-check.txt", report);
             return 0;
         }
@@ -91,12 +103,14 @@ static class Program
         // Double-clicked copy that already lives in a game folder: that's the game.
         if (game == null && IsGameFolder(AppDomain.CurrentDomain.BaseDirectory)) game = AppDomain.CurrentDomain.BaseDirectory;
         if (game == null) throw new Exception("Run this through Steam (launch option) or from the setup window.");
-        string sku = LatestSkuDef(game);
+        string sku = LatestSkuDef(game, lang);
         string exe = Path.Combine(game, SetExe(sku));
 
         byte[] img = File.ReadAllBytes(exe);
         uint render = FindRenderFps(img);
         List<uint> sites = FindPacingSites(img, render, render - 4);
+        sites.AddRange(SelectSites(FindExtraSites(img, render, render - 4, sites), extra));
+        if (ticks) sites.AddRange(FindTickStores(img, render, render - 4));
         uint pfxSim, pfxSite = FindParticleSim(img, out pfxSim);
 
         string cmd = "\"" + exe + "\" -config \"" + sku + "\"" + (pass.Count > 0 ? " " + string.Join(" ", pass) : "");
@@ -247,7 +261,8 @@ static class Program
             y += 40;
             Controls.Add(Line(y));
             var install = new Button { Text = "Install", Bounds = new Rectangle(324, y + 13, 75, 23), Enabled = games.Count > 0 };
-            var cancel = new Button { Text = "Cancel", Bounds = new Rectangle(405, y + 13, 75, 23), DialogResult = DialogResult.Cancel };
+            var cancel = new Button { Text = "Cancel", Bounds = new Rectangle(405, y + 13, 75, 23) };
+            cancel.Click += (s, e) => Close();   // this window isn't a dialog, so DialogResult alone does nothing
             install.Click += (s, e) => Install();
             Controls.AddRange(new Control[] { install, cancel });
             AcceptButton = install;
@@ -367,13 +382,20 @@ static class Program
     // `fps=N` from the given ini, or the fallback if the file/key is missing.
     static int ReadIniFps(string ini, int fallback)
     {
-        if (!File.Exists(ini)) return fallback;
+        string v = ReadIni(ini, "fps");
+        int n;
+        return v != null && int.TryParse(v, out n) ? n : fallback;
+    }
+
+    static string ReadIni(string ini, string key)
+    {
+        if (!File.Exists(ini)) return null;
         foreach (string line in File.ReadAllLines(ini))
         {
-            var m = Regex.Match(line, @"^\s*fps\s*=\s*(\d+)", RegexOptions.IgnoreCase);
-            if (m.Success) return int.Parse(m.Groups[1].Value);
+            var m = Regex.Match(line, @"^\s*" + key + @"\s*=\s*(\S+)", RegexOptions.IgnoreCase);
+            if (m.Success) return m.Groups[1].Value;
         }
-        return fallback;
+        return null;
     }
 
     // ---- locating the game -------------------------------------------------
@@ -385,6 +407,7 @@ static class Program
         new[] { "Command and Conquer Red Alert 3",          "Red Alert 3" },
         new[] { "Command and Conquer 3 Tiberium Wars",      "Tiberium Wars" },
         new[] { "Command and Conquer 3 - Kane's Wrath",     "Kane's Wrath" },
+        new[] { "Command and Conquer Red Alert 3 Uprising",   "Red Alert 3 Uprising" },   // Steam folder name
         new[] { "Command and Conquer Red Alert 3 - Uprising", "Red Alert 3 Uprising" },
     };
 
@@ -415,16 +438,49 @@ static class Program
         catch { return false; }
     }
 
-    // The launcher runs the highest-versioned <prefix>_<lang>_1.N.SkuDef.
-    static string LatestSkuDef(string game)
+    // The launcher runs the highest-versioned <prefix>_<lang>_1.N.SkuDef for the game's
+    // language. Non-English installs ship English SkuDefs too, so the language matters.
+    static string LatestSkuDef(string game, string lang)
     {
-        var best = Directory.GetFiles(game, "*_1.*.SkuDef")
-            .Select(f => new { f, m = Regex.Match(Path.GetFileName(f), @"_1\.(\d+)\.SkuDef$", RegexOptions.IgnoreCase) })
+        var skus = Directory.GetFiles(game, "*_1.*.SkuDef")
+            .Select(f => new { f, m = Regex.Match(Path.GetFileName(f), @"^.+?_([A-Za-z]+)_1\.(\d+)\.SkuDef$") })
             .Where(x => x.m.Success)
-            .OrderByDescending(x => int.Parse(x.m.Groups[1].Value))
-            .FirstOrDefault();
-        if (best == null) throw new Exception("No SkuDef found in " + game);
-        return best.f;
+            .Select(x => new { x.f, lang = x.m.Groups[1].Value.ToLowerInvariant(), ver = int.Parse(x.m.Groups[2].Value) })
+            .ToList();
+        if (skus.Count == 0) throw new Exception("No SkuDef found in " + game);
+
+        // Preference: --lang, the language Steam wrote to the registry, Windows' language, English.
+        var wanted = new[] { lang, RegistryLanguage(game),
+                             CultureInfo.CurrentUICulture.Parent.EnglishName.Split(' ')[0].ToLowerInvariant(), "english" };
+        string pick = wanted.FirstOrDefault(l => l != null && skus.Any(s => s.lang == l)) ?? skus[0].lang;
+        return skus.Where(s => s.lang == pick).OrderByDescending(s => s.ver).First().f;
+    }
+
+    // Steam's install script writes the chosen language (e.g. "German", "English (US)") under the
+    // game's Electronic Arts registry key. Find the key whose install path is this folder.
+    static string RegistryLanguage(string game)
+    {
+        string target = Path.GetFullPath(game).TrimEnd('\\');
+        foreach (string root in new[] { @"SOFTWARE\WOW6432Node\Electronic Arts\Electronic Arts", @"SOFTWARE\Electronic Arts\Electronic Arts" })
+        {
+            try
+            {
+                using (var ea = Registry.LocalMachine.OpenSubKey(root))
+                {
+                    if (ea == null) continue;
+                    foreach (string name in ea.GetSubKeyNames())
+                        using (var k = ea.OpenSubKey(name))
+                        {
+                            string dir = (k.GetValue("Install Dir") ?? k.GetValue("installpath") ?? k.GetValue("InstallPath")) as string;
+                            if (dir == null || !string.Equals(Path.GetFullPath(dir).TrimEnd('\\'), target, StringComparison.OrdinalIgnoreCase)) continue;
+                            string l = (k.GetValue("language") ?? k.GetValue("Language")) as string;
+                            if (!string.IsNullOrEmpty(l)) return l.Split(' ')[0].ToLowerInvariant();
+                        }
+                }
+            }
+            catch { }
+        }
+        return null;
     }
 
     static string SetExe(string sku)
@@ -513,6 +569,74 @@ static class Program
             throw new Exception("Unsupported game build (main loop not found).");
         sites.Sort();
         return sites;
+    }
+
+    // Every other plain read of render_fps (mostly `fild [fps]` float conversions in visual code),
+    // minus anything that must stay 30: logic-rate derivations (fps/2, fps/logic), the particle
+    // clock's "now" (`call getTime / imul eax,[fps]`) and time-unit initializers (fild then fmul).
+    static List<uint> FindExtraSites(byte[] img, uint r, uint l, List<uint> pacing)
+    {
+        int end = TextEnd(img);
+        byte[] R = BitConverter.GetBytes(r), L = BitConverter.GetBytes(l);
+        Func<int, byte[], bool> at = (i, b) => img[i] == b[0] && img[i + 1] == b[1] && img[i + 2] == b[2] && img[i + 3] == b[3];
+        var twoByte = new[] { "8B05", "8B0D", "8B15", "8B1D", "8B35", "8B3D", "DB05", "0FAF05", "0FAF0D", "0FAF15", "3B05", "3B0D", "3B15" };
+        var list = new List<uint>();
+        for (int i = 0x1003; i < end - 32; i++)
+        {
+            if (!at(i, R)) continue;
+            uint va = ImageBase + (uint)i;
+            if (pacing.Contains(va) || pacing.Contains(va - 6) || pacing.Contains(va + 6)) continue;   // incl. the sign-test read next to a redirected fild
+            string p2 = img[i - 2].ToString("X2") + img[i - 1].ToString("X2");
+            string p3 = img[i - 3].ToString("X2") + p2;
+            if (!(img[i - 1] == 0xA1 || twoByte.Contains(p2) || twoByte.Contains(p3))) continue;
+            if (img[i + 4] == 0xD1 && img[i + 5] >= 0xE8 && img[i + 5] <= 0xEF) continue;          // fps/2 = logic rate
+            bool divL = false;
+            for (int k = i + 4; k < i + 10; k++)
+                if (img[k] == 0xF7 && (img[k + 1] == 0x35 || img[k + 1] == 0x3D) && at(k + 2, L)) divL = true;
+            if (divL) continue;                                                                    // fps / logic
+            if (p3.StartsWith("0FAF") && img[i - 8] == 0xE8) continue;                             // call getTime / imul [fps]
+            // Static initializer `push ecx / mov eax,[fps] / fild [fps] / ... / fmul`: a time unit.
+            int s = img[i - 1] == 0xA1 ? i : (p2 == "DB05" ? i - 6 : -1);
+            if (s > 0 && img[s - 2] == 0x51 && img[s - 1] == 0xA1 && img[s + 4] == 0xDB && img[s + 14] == 0xD8
+                && img[s + 20] == 0xD8 && img[s + 21] == 0x0D) continue;
+            list.Add(va);
+        }
+        return list;
+    }
+
+    // `mov eax,[fps] / xor edx,edx / div [logic]` whose result is stored into an object
+    // (`mov [reg+x],eax` shortly after): cached "frames per logic tick" copies. If these keep
+    // the stock value (2) while the main loop runs 8 frames per tick, anything paced by the
+    // cached copy (e.g. construction progress) runs fps/30 times too fast.
+    static List<uint> FindTickStores(byte[] img, uint r, uint l)
+    {
+        int end = TextEnd(img);
+        byte[] R = BitConverter.GetBytes(r), L = BitConverter.GetBytes(l);
+        Func<int, byte[], bool> at = (i, b) => img[i] == b[0] && img[i + 1] == b[1] && img[i + 2] == b[2] && img[i + 3] == b[3];
+        var list = new List<uint>();
+        for (int i = 0x1001; i < end - 32; i++)
+        {
+            if (img[i - 1] != 0xA1 || !at(i, R) || img[i + 4] != 0x33 || img[i + 5] != 0xD2 || img[i + 6] != 0xF7 || img[i + 7] != 0x35 || !at(i + 8, L)) continue;
+            for (int k = i + 12; k < i + 22; k++)
+                if (img[k] == 0x89 && (img[k + 1] & 0xC0) == 0x40 && (img[k + 1] & 0x38) == 0x00)   // mov [reg+disp8],eax
+                { list.Add(ImageBase + (uint)i); break; }
+        }
+        return list;
+    }
+
+    // "all", "none", or comma-separated indices/ranges into the list, e.g. "0-20,25".
+    static List<uint> SelectSites(List<uint> all, string spec)
+    {
+        if (spec == null || spec == "none") return new List<uint>();
+        if (spec == "all") return all;
+        var pick = new List<uint>();
+        foreach (string part in spec.Split(','))
+        {
+            string[] ab = part.Split('-');
+            int a = int.Parse(ab[0]), b = ab.Length > 1 ? int.Parse(ab[1]) : a;
+            for (int k = a; k <= b && k < all.Count; k++) pick.Add(all[k]);
+        }
+        return pick;
     }
 
     // End of the .text section in the file (raw offset == RVA in these games).

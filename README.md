@@ -22,6 +22,16 @@ Needs the **Steam** versions (current updates: RA3 1.13, Tiberium Wars 1.10, Kan
 
 It has to be a multiple of 15 (60, 75, 90, 120, 135, 165, 240...). These games tick 15 times a second, so each tick needs a whole number of frames or the game speed drifts. If you have a 144 Hz monitor, use 135.
 
+**Pick a frame rate your PC can actually hold.** The game advances one tick every few frames, so if your PC can't keep up (say you set 120 but it only draws 60), the whole game runs in slow motion. The stock game does the same thing below 30 fps. On a laptop running on battery, 60 is a safer bet.
+
+## Known issues
+
+- **RA3: Soviet and Empire buildings look finished instantly** (the build-up animation and the progress bar on the building). They still only become usable after the real build time. Allied buildings are fine. ([#3](../../issues/3))
+- Camera scrolling is more sensitive at higher fps ([#2](../../issues/2))
+- Some effects play too fast (e.g. RA3 power plant fog), and the TW/KW Ion Cannon hit effect looks off ([#4](../../issues/4), [#5](../../issues/5))
+
+For what it's worth, the paid SageMetaTool has these too. They're next on my list.
+
 ## Is it safe?
 
 - It doesn't modify any game files. It starts the normal game, changes a few timing values in memory while it's starting up, and that's it.
@@ -44,13 +54,14 @@ The full story, including how I tracked the flicker down with a frame-by-frame g
 
 - **Generals / Zero Hour**: logic and rendering share one clock, so this trick can't work. See [TheSuperHackers/GeneralsGameCode](https://github.com/TheSuperHackers/GeneralsGameCode), which works from EA's released source.
 - **Red Alert 2 / Tiberian Sun**: different engine entirely, same problem.
-- **RA3 Uprising**: should work (same engine). I just haven't been able to test it.
+- **RA3 Uprising**: the setup detects it, and it should work (same engine), but I haven't been able to test it myself. Let me know!
 
 ## Advanced options
 
 Put these in the Steam launch options, before `%command%`:
 
 - `--fps 90` overrides the ini for one launch
+- `--lang german` forces a language. Normally it uses the language Steam installed, then your Windows language.
 - `--pfx off` stops RA3's particles from simulating at 30 Hz (they look a bit smoother, but I haven't tested it much)
 - `--check "<path to the game's .game/.dat exe>"` is a dry run that writes a report of which code locations it would patch. Useful if an update breaks it.
 
