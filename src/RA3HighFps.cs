@@ -59,6 +59,7 @@ static class Program
         // Experimental: also update cached "frames per logic tick" copies. ini: ticks=on
         bool ticks = ReadIni(Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "RA3HighFps.ini"), "ticks") == "on";
         string check = null, game = null, lang = null;
+        int runver = -1;   // -runver 1.12 (the stock launcher option): run that game version instead of the newest
         var pass = new List<string>();
         for (int i = 0; i < argv.Length; i++)
         {
@@ -69,6 +70,10 @@ static class Program
             else if (argv[i] == "--ticks" && i + 1 < argv.Length) ticks = argv[++i] == "on";
             else if (argv[i] == "--game" && i + 1 < argv.Length) game = argv[++i];
             else if (argv[i] == "--lang" && i + 1 < argv.Length) lang = argv[++i].ToLowerInvariant();   // e.g. --lang german
+            // The stock launcher's own options: -runver picks the SkuDef version; -ui (its launcher window) has no
+            // equivalent here, so it's dropped rather than passed to the game.
+            else if (argv[i].Equals("-runver", StringComparison.OrdinalIgnoreCase) && i + 1 < argv.Length) runver = int.Parse(argv[++i].Split('.').Last());
+            else if (argv[i].Equals("-ui", StringComparison.OrdinalIgnoreCase)) continue;
             else if (argv[i] == "--play") continue;   // shortcut to the installed copy: just launch this folder's game
             // apitrace's d3d9.dll wrapper (when present in the exe folder) writes its trace here.
             else if (argv[i] == "--trace" && i + 1 < argv.Length) Environment.SetEnvironmentVariable("TRACE_FILE", argv[++i]);
@@ -103,7 +108,7 @@ static class Program
         // Double-clicked copy that already lives in a game folder: that's the game.
         if (game == null && IsGameFolder(AppDomain.CurrentDomain.BaseDirectory)) game = AppDomain.CurrentDomain.BaseDirectory;
         if (game == null) throw new Exception("Run this through Steam (launch option) or from the setup window.");
-        string sku = LatestSkuDef(game, lang);
+        string sku = LatestSkuDef(game, lang, runver);
         string exe = Path.Combine(game, SetExe(sku));
 
         byte[] img = File.ReadAllBytes(exe);
@@ -439,8 +444,9 @@ static class Program
     }
 
     // The launcher runs the highest-versioned <prefix>_<lang>_1.N.SkuDef for the game's
-    // language. Non-English installs ship English SkuDefs too, so the language matters.
-    static string LatestSkuDef(string game, string lang)
+    // language (or 1.<runver> when -runver is given, e.g. 1.12 for mods that need it).
+    // Non-English installs ship English SkuDefs too, so the language matters.
+    static string LatestSkuDef(string game, string lang, int runver = -1)
     {
         var skus = Directory.GetFiles(game, "*_1.*.SkuDef")
             .Select(f => new { f, m = Regex.Match(Path.GetFileName(f), @"^.+?_([A-Za-z]+)_1\.(\d+)\.SkuDef$") })
@@ -453,7 +459,14 @@ static class Program
         var wanted = new[] { lang, RegistryLanguage(game),
                              CultureInfo.CurrentUICulture.Parent.EnglishName.Split(' ')[0].ToLowerInvariant(), "english" };
         string pick = wanted.FirstOrDefault(l => l != null && skus.Any(s => s.lang == l)) ?? skus[0].lang;
-        return skus.Where(s => s.lang == pick).OrderByDescending(s => s.ver).First().f;
+        var mine = skus.Where(s => s.lang == pick).ToList();
+        if (runver >= 0)
+        {
+            var exact = mine.FirstOrDefault(s => s.ver == runver);
+            if (exact == null) throw new Exception("-runver 1." + runver + ": no " + pick + " SkuDef for that version in " + game);
+            return exact.f;
+        }
+        return mine.OrderByDescending(s => s.ver).First().f;
     }
 
     // Steam's install script writes the chosen language (e.g. "German", "English (US)") under the

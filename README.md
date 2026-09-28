@@ -56,6 +56,21 @@ The full story, including how I tracked the flicker down with a frame-by-frame g
 - **Red Alert 2 / Tiberian Sun**: different engine entirely, same problem.
 - **RA3 Uprising**: the setup detects it, and it should work (same engine), but I haven't been able to test it myself. Let me know!
 
+## Older versions and mods
+
+The normal RA3 launcher options still work, just put them **after** `%command%` in the Steam launch options:
+
+- `-runver 1.12` runs the 1.12 version instead of the newest one (a lot of mods need 1.12)
+- `-modConfig "C:\path\to\mod\mod.skudef"` loads a mod
+
+For example, a mod that needs 1.12:
+
+```
+"...\RA3HighFps.exe" %command% -runver 1.12 -modConfig "C:\path\to\mod\mod.skudef"
+```
+
+`-ui` (the old launcher window where you pick a version or mod) doesn't work with the unlocker, because the unlocker replaces that launcher. Use the two options above instead. Mod launchers that start the game themselves skip Steam, so the unlocker doesn't run with those either.
+
 ## Advanced options
 
 Put these in the Steam launch options, before `%command%`:
