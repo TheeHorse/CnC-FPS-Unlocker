@@ -51,36 +51,23 @@ static class Program
     {
         // RA3HighFps.ini next to the exe; --fps overrides it
         int fps = ReadIniFps(Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "RA3HighFps.ini"), 120);
-        // render_fps is used two ways: as the real frame pacing rate, and as a fixed "30ths of a
-        // second" time unit (effects/particles, whose shaders use Time*30). Redirecting the
-        // time-unit reads makes particle birth times run fps/30 ahead of the shader clock, so
-        // new particles get a huge negative age and blow up into white/colored sheets.
-        // Default: every core site except 5, the static init of framesPerMs = fps*0.001, which
-        // the particle code uses to stamp birth times. (Pacing-only "1,2,7" leaves another
-        // limiter at 30 fps while the main loop expects 8 frames per tick: ~4x slow game.)
-        string check = null, extraSpec = "none", coreSpec = "0-4,6,7";
-        int logicOverride = 0;  // experimental: overwrite logic_fps (stock 15), as the 2009 60fps mod did
-        string msSpec = null;   // experimental: effect-duration readers of frame_ms see 33 ms instead
-        // Run only the particle simulation step at its native 30 Hz (fixes white smoke blowout).
+        // Particles simulate at their native 30 Hz, like the stock game.
         bool throttlePfx = true;
-        string dtSpec = null, f30Spec = null;  // experimental: readers of 1/30f and 30.0f see 1/fps and fps
+        string check = null, game = null;
         var pass = new List<string>();
         for (int i = 0; i < argv.Length; i++)
         {
             if (argv[i] == "--fps" && i + 1 < argv.Length) fps = int.Parse(argv[++i]);
             else if (argv[i] == "--check" && i + 1 < argv.Length) check = argv[++i];
-            else if (argv[i] == "--extra" && i + 1 < argv.Length) extraSpec = argv[++i];
-            else if (argv[i] == "--core" && i + 1 < argv.Length) coreSpec = argv[++i];
-            else if (argv[i] == "--logic" && i + 1 < argv.Length) logicOverride = int.Parse(argv[++i]);
-            else if (argv[i] == "--msfix" && i + 1 < argv.Length) msSpec = argv[++i];
             else if (argv[i] == "--pfx" && i + 1 < argv.Length) throttlePfx = argv[++i] != "off";
-            else if (argv[i] == "--dt30" && i + 1 < argv.Length) dtSpec = argv[++i];
-            // apitrace's d3d9.dll wrapper (when present in Data\) writes its trace here.
+            else if (argv[i] == "--game" && i + 1 < argv.Length) game = argv[++i];
+            else if (argv[i] == "--play") continue;   // shortcut to the installed copy: just launch this folder's game
+            // apitrace's d3d9.dll wrapper (when present in the exe folder) writes its trace here.
             else if (argv[i] == "--trace" && i + 1 < argv.Length) Environment.SetEnvironmentVariable("TRACE_FILE", argv[++i]);
-            else if (argv[i] == "--f30" && i + 1 < argv.Length) f30Spec = argv[++i];
-            else if (argv[i] == "--play") continue;  // from the setup window's Play button
-            // Launched from Steam as `RA3HighFps.exe %command%`: skip Steam's own RA3.exe path.
-            else if (argv[i].EndsWith("RA3.exe", StringComparison.OrdinalIgnoreCase)) continue;
+            // Steam runs us as `RA3HighFps.exe %command%`, so the first thing after our own
+            // options is the game's launcher (RA3.exe, CNC3.exe, ...). Its folder is the game.
+            else if (game == null && argv[i].EndsWith(".exe", StringComparison.OrdinalIgnoreCase) && File.Exists(argv[i]))
+                game = Path.GetDirectoryName(Path.GetFullPath(argv[i]));
             else pass.Add(argv[i].Contains(" ") ? "\"" + argv[i] + "\"" : argv[i]);
         }
         // Logic runs at 15 ticks/s, so each tick must span a whole number of frames.
@@ -89,45 +76,28 @@ static class Program
 
         if (check != null)
         {
-            // Dry run against a given executable: report what would be patched.
+            // Dry run against a given game executable: report what would be patched.
             byte[] c = File.ReadAllBytes(check);
             uint cr = FindRenderFps(c);
-            var cs = FindSites(c, cr, cr - 4);
-            var cx = FindExtraSites(c, cr, cr - 4, cs);
-            string report = string.Format("render_fps @0x{0:X} = {1}, logic_fps = {2}\nsites: {3}\nextra ({4}):\n{5}\n", cr,
-                BitConverter.ToInt32(c, (int)(cr - ImageBase)), BitConverter.ToInt32(c, (int)(cr - 4 - ImageBase)),
-                string.Join(", ", cs.Select(s => "0x" + s.ToString("X"))), cx.Count,
-                string.Join("\n", cx.Select((s, k) => k + ": 0x" + s.ToString("X") + "  " + Hex(c, (int)(s - ImageBase) - 3, 12))));
-            var cm = FindFrameMsReaders(c, BitConverter.ToUInt32(c, Scan(c, FrameMsSig)[0] + 14));
+            var cs = FindPacingSites(c, cr, cr - 4);
             uint pm, ps = FindParticleSim(c, out pm);
-            report += string.Format("particle sim call @0x{0:X} (target 0x{1:X})\n", ps, pm);
-            foreach (var kv in new[] { Tuple.Create("1/30f", 0x3D088889u), Tuple.Create("30.0f", 0x41F00000u) })
-            {
-                var r = FindConstReaders(c, kv.Item2);
-                report += string.Format("{0} readers ({1}):\n{2}\n", kv.Item1, r.Count,
-                    string.Join("\n", r.Select((s, k) => k + ": 0x" + s.ToString("X") + "  " + Hex(c, (int)(s - ImageBase) - 4, 12))));
-            }
-            report += string.Format("frame_ms readers ({0}):\n{1}\n", cm.Count,
-                string.Join("\n", cm.Select((s, k) => k + ": 0x" + s.ToString("X") + "  " + Hex(c, (int)(s - ImageBase) - 3, 14))));
+            string report = string.Format("render_fps @0x{0:X} = {1}, logic_fps = {2}\nsites: {3}\nparticle sim call @0x{4:X} (target 0x{5:X})\n",
+                cr, BitConverter.ToInt32(c, (int)(cr - ImageBase)), BitConverter.ToInt32(c, (int)(cr - 4 - ImageBase)),
+                string.Join(", ", cs.Select(s => "0x" + s.ToString("X"))), ps, pm);
             File.WriteAllText(check + ".hfr-check.txt", report);
             return 0;
         }
 
-        string game = FindGame();
+        // Double-clicked copy that already lives in a game folder: that's the game.
+        if (game == null && IsGameFolder(AppDomain.CurrentDomain.BaseDirectory)) game = AppDomain.CurrentDomain.BaseDirectory;
+        if (game == null) throw new Exception("Run this through Steam (launch option) or from the setup window.");
         string sku = LatestSkuDef(game);
         string exe = Path.Combine(game, SetExe(sku));
 
         byte[] img = File.ReadAllBytes(exe);
         uint render = FindRenderFps(img);
-        uint logic = render - 4;
-        List<uint> allCore = FindSites(img, render, logic);
-        List<uint> sites = SelectExtra(allCore, coreSpec);
-        sites.AddRange(SelectExtra(FindExtraSites(img, render, logic, allCore), extraSpec));
-        uint frameMs = BitConverter.ToUInt32(img, Scan(img, FrameMsSig)[0] + 14);
-        List<uint> msSites = SelectExtra(FindFrameMsReaders(img, frameMs), msSpec);
+        List<uint> sites = FindPacingSites(img, render, render - 4);
         uint pfxSim, pfxSite = FindParticleSim(img, out pfxSim);
-        List<uint> dtSites = SelectExtra(FindConstReaders(img, 0x3D088889), dtSpec);   // 1/30f
-        List<uint> f30Sites = SelectExtra(FindConstReaders(img, 0x41F00000), f30Spec); // 30.0f
 
         string cmd = "\"" + exe + "\" -config \"" + sku + "\"" + (pass.Count > 0 ? " " + string.Join(" ", pass) : "");
         var si = new STARTUPINFO { cb = Marshal.SizeOf(typeof(STARTUPINFO)) };
@@ -137,25 +107,13 @@ static class Program
 
         try
         {
-            // Layout: +0 render fps, +4 frame_ms override, +8 particle accumulator, +40h stub code.
+            // Layout: +0 render fps, +8 particle accumulator, +40h stub code.
             IntPtr mem = VirtualAllocEx(pi.hProcess, IntPtr.Zero, (UIntPtr)4096, MEM_COMMIT | MEM_RESERVE, PAGE_EXECUTE_READWRITE);
             if (mem == IntPtr.Zero) throw new Exception("VirtualAllocEx failed.");
             Write(pi.hProcess, (uint)mem, BitConverter.GetBytes(fps));
             Redirect(pi.hProcess, sites, (uint)mem);
-            if (msSites.Count > 0)
-            {
-                Write(pi.hProcess, (uint)mem + 4, BitConverter.GetBytes(1000 / 30));
-                Redirect(pi.hProcess, msSites, (uint)mem + 4);
-            }
-            // +10h: 1/fps, +14h: fps as floats
-            Write(pi.hProcess, (uint)mem + 0x10, BitConverter.GetBytes(1f / fps));
-            Write(pi.hProcess, (uint)mem + 0x14, BitConverter.GetBytes((float)fps));
-            if (dtSites.Count > 0) Redirect(pi.hProcess, dtSites, (uint)mem + 0x10);
-            if (f30Sites.Count > 0) Redirect(pi.hProcess, f30Sites, (uint)mem + 0x14);
             if (throttlePfx && pfxSite != 0)
                 ThrottleParticles(pi.hProcess, pfxSite, pfxSim, (uint)mem, (uint)mem + 8, (uint)mem + 0x40);
-            if (logicOverride > 0)
-                Write(pi.hProcess, logic, BitConverter.GetBytes(logicOverride));  // .data, already writable
             FlushInstructionCache(pi.hProcess, IntPtr.Zero, UIntPtr.Zero);
         }
         catch
@@ -230,16 +188,17 @@ static class Program
 
     // ---- setup window ----------------------------------------------------------
 
-    // Little window you get when you double-click the exe. Picks the fps, copies the
-    // exe into the RA3 folder and gives you the Steam launch option to paste.
+    // Little window you get when you double-click the exe. Lists every supported game it
+    // finds, installs into the ticked ones, then shows the Steam launch option for each.
     class SetupForm : Form
     {
         readonly ComboBox fpsBox = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList };
-        string game;
+        readonly CheckedListBox gameList = new CheckedListBox { CheckOnClick = true, IntegralHeight = false, BorderStyle = BorderStyle.FixedSingle };
+        List<Tuple<string, string>> games;
 
         public SetupForm()
         {
-            Text = "RA3 FPS Unlocker Setup";
+            Text = "C&C FPS Unlocker Setup";
             AutoScaleDimensions = new SizeF(96f, 96f);
             AutoScaleMode = AutoScaleMode.Dpi;
             Font = SystemFonts.MessageBoxFont;
@@ -247,7 +206,6 @@ static class Program
             MaximizeBox = MinimizeBox = false;
             ShowIcon = false;
             StartPosition = FormStartPosition.CenterScreen;
-            ClientSize = new Size(500, 280);
 
             // Header strip
             var banner = new PictureBox { Bounds = new Rectangle(0, 0, 500, 90), SizeMode = PictureBoxSizeMode.StretchImage };
@@ -256,34 +214,45 @@ static class Program
             Controls.Add(banner);
             Controls.Add(Line(90));
 
-            try { game = FindGame(); } catch { game = null; }
+            games = FindGames();
+            Controls.Add(new Label { Text = "Install C&C FPS Unlocker", AutoSize = true, Location = new Point(20, 106),
+                                     Font = new Font(Font, FontStyle.Bold), UseMnemonic = false });
+            Controls.Add(new Label { AutoSize = true, Location = new Point(20, 132), UseMnemonic = false,
+                                     Text = games.Count > 0 ? "Install for these games:" : "No supported games found (Steam versions of RA3, C&C3, Kane's Wrath)." });
 
-            Controls.Add(new Label { Text = "Install RA3 FPS Unlocker", AutoSize = true, Location = new Point(20, 106),
-                                     Font = new Font(Font, FontStyle.Bold) });
-            Controls.Add(new Label { AutoSize = true, Location = new Point(20, 132),
-                                     Text = game != null ? "Red Alert 3 found at:" : "Red Alert 3 (Steam version) wasn't found on this PC." });
-            if (game != null)
-                Controls.Add(new Label { Text = game, AutoEllipsis = true, Bounds = new Rectangle(20, 152, 460, 20),
-                                         ForeColor = SystemColors.GrayText });
+            var tips = new ToolTip();
+            int listH = Math.Max(1, games.Count) * 20 + 6;
+            gameList.Bounds = new Rectangle(20, 152, 460, listH);
+            foreach (var g in games) gameList.Items.Add(g.Item1, true);
+            Controls.Add(gameList);
+            gameList.MouseMove += (s, e) =>
+            {
+                int i = gameList.IndexFromPoint(e.Location);
+                string tip = i >= 0 && i < games.Count ? games[i].Item2 : "";
+                if (tips.GetToolTip(gameList) != tip) tips.SetToolTip(gameList, tip);
+            };
 
-            Controls.Add(new Label { Text = "Frame rate:", AutoSize = true, Location = new Point(20, 196) });
+            int y = gameList.Bottom + 16;
+            Controls.Add(new Label { Text = "Frame rate:", AutoSize = true, Location = new Point(20, y + 4) });
             for (int f = 30; f <= 240; f += 15) fpsBox.Items.Add(f + " fps");
-            int current = game != null ? ReadIniFps(IniPath(game), 0) : 0;
+            int current = games.Select(g => ReadIniFps(IniPath(g.Item2), 0)).FirstOrDefault(v => v > 0);
             int pick = current > 0 ? current : Math.Max(30, Math.Min(240, MonitorHz() / 15 * 15));
             fpsBox.SelectedItem = pick + " fps";
             if (fpsBox.SelectedIndex < 0) fpsBox.SelectedItem = "120 fps";
-            fpsBox.Bounds = new Rectangle(100, 192, 100, 23);
+            fpsBox.Bounds = new Rectangle(100, y, 100, 23);
             Controls.Add(fpsBox);
-            Controls.Add(new Label { AutoSize = true, Location = new Point(210, 196), ForeColor = SystemColors.GrayText,
+            Controls.Add(new Label { AutoSize = true, Location = new Point(210, y + 4), ForeColor = SystemColors.GrayText,
                                      Text = "(your monitor: " + MonitorHz() + " Hz)" });
 
-            Controls.Add(Line(232));
-            var install = new Button { Text = "Install", Bounds = new Rectangle(324, 245, 75, 23), Enabled = game != null };
-            var cancel = new Button { Text = "Cancel", Bounds = new Rectangle(405, 245, 75, 23), DialogResult = DialogResult.Cancel };
+            y += 40;
+            Controls.Add(Line(y));
+            var install = new Button { Text = "Install", Bounds = new Rectangle(324, y + 13, 75, 23), Enabled = games.Count > 0 };
+            var cancel = new Button { Text = "Cancel", Bounds = new Rectangle(405, y + 13, 75, 23), DialogResult = DialogResult.Cancel };
             install.Click += (s, e) => Install();
             Controls.AddRange(new Control[] { install, cancel });
             AcceptButton = install;
             CancelButton = cancel;
+            ClientSize = new Size(500, y + 48);
             Shown += (s, e) => fpsBox.Focus();
         }
 
@@ -295,30 +264,77 @@ static class Program
 
         int SelectedFps() { return int.Parse(((string)fpsBox.SelectedItem).Split(' ')[0]); }
 
-        // Copies this exe into the game folder (if it isn't already there) and saves the fps.
+        // Copies this exe into each ticked game folder and saves the fps there.
         void Install()
         {
+            var done = new List<Tuple<string, string>>();   // (game name, launch option)
             try
             {
-                string target = Path.Combine(game, "RA3HighFps.exe");
-                string self = Application.ExecutablePath;
-                if (!string.Equals(Path.GetFullPath(self), Path.GetFullPath(target), StringComparison.OrdinalIgnoreCase))
-                    File.Copy(self, target, true);
-                File.WriteAllLines(IniPath(game), new[] { "; RA3 FPS Unlocker settings (multiple of 15, 30-240)", "fps=" + SelectedFps() });
-                Clipboard.SetText("\"" + target + "\" %command%");
-
-                MessageBox.Show(this,
-                    "RA3 FPS Unlocker is installed (" + SelectedFps() + " fps).\n\n" +
-                    "One last step: in Steam, right-click Red Alert 3 > Properties, and paste into " +
-                    "Launch Options. The line is already copied to your clipboard.\n\n" +
-                    "To change the frame rate later, run this setup again.",
-                    "Setup complete", MessageBoxButtons.OK, MessageBoxIcon.Information);
-                Close();
+                foreach (int i in gameList.CheckedIndices)
+                {
+                    string dir = games[i].Item2;
+                    string target = Path.Combine(dir, "RA3HighFps.exe");
+                    if (!string.Equals(Path.GetFullPath(Application.ExecutablePath), Path.GetFullPath(target), StringComparison.OrdinalIgnoreCase))
+                        File.Copy(Application.ExecutablePath, target, true);
+                    File.WriteAllLines(IniPath(dir), new[] { "; C&C FPS Unlocker settings (multiple of 15, 30-240)", "fps=" + SelectedFps() });
+                    done.Add(Tuple.Create(games[i].Item1, "\"" + target + "\" %command%"));
+                }
             }
             catch (Exception ex)
             {
                 MessageBox.Show(this, "Couldn't install:\n\n" + ex.Message, "Setup", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                return;
             }
+            if (done.Count == 0) { MessageBox.Show(this, "Tick at least one game.", "Setup"); return; }
+            Hide();
+            new FinishForm(done, SelectedFps()).ShowDialog();
+            Close();
+        }
+    }
+
+    // Last page: one launch option per game, each with a Copy button.
+    class FinishForm : Form
+    {
+        public FinishForm(List<Tuple<string, string>> done, int fps)
+        {
+            Text = "Setup complete";
+            AutoScaleDimensions = new SizeF(96f, 96f);
+            AutoScaleMode = AutoScaleMode.Dpi;
+            Font = SystemFonts.MessageBoxFont;
+            FormBorderStyle = FormBorderStyle.FixedDialog;
+            MaximizeBox = MinimizeBox = false;
+            ShowIcon = false;
+            StartPosition = FormStartPosition.CenterScreen;
+
+            Controls.Add(new Label { Text = "Installed at " + fps + " fps. One last step for each game:", AutoSize = true,
+                                     Location = new Point(20, 18), Font = new Font(Font, FontStyle.Bold) });
+            Controls.Add(new Label { AutoSize = true, Location = new Point(20, 42), UseMnemonic = false,
+                                     Text = "In Steam, right-click the game > Properties > Launch Options, and paste its line." });
+
+            int y = 74;
+            foreach (var d in done)
+            {
+                Controls.Add(new Label { Text = d.Item1, AutoSize = true, Location = new Point(20, y), UseMnemonic = false });
+                var box = new TextBox { Text = d.Item2, ReadOnly = true, Bounds = new Rectangle(20, y + 20, 380, 23) };
+                var copy = new Button { Text = "Copy", Bounds = new Rectangle(405, y + 19, 75, 25) };
+                copy.Click += (s, e) => { Clipboard.SetText(box.Text); copy.Text = "Copied"; };
+                Controls.AddRange(new Control[] { box, copy });
+                y += 56;
+            }
+
+            Controls.Add(new Label { AutoSize = true, Location = new Point(20, y + 2), ForeColor = SystemColors.GrayText,
+                                     Text = "To change the frame rate later, just run this setup again." });
+            y += 30;
+            Controls.Add(new Label { BorderStyle = BorderStyle.Fixed3D, Bounds = new Rectangle(0, y, 500, 2) });
+            var ok = new Button { Text = "Finish", Bounds = new Rectangle(405, y + 13, 75, 23), DialogResult = DialogResult.OK };
+            Controls.Add(ok);
+            AcceptButton = ok;
+            ClientSize = new Size(500, y + 48);
+            Shown += (s, e) =>
+            {
+                foreach (var tb in Controls.OfType<TextBox>()) tb.Select(0, 0);   // show the start of each line
+                ok.Focus();
+            };
         }
     }
 
@@ -362,7 +378,18 @@ static class Program
 
     // ---- locating the game -------------------------------------------------
 
-    static string FindGame()
+    // Steam folder name -> display name. All are SAGE games with a launcher that runs the
+    // real exe from the newest <prefix>_<lang>_1.N.SkuDef.
+    static readonly string[][] Games =
+    {
+        new[] { "Command and Conquer Red Alert 3",          "Red Alert 3" },
+        new[] { "Command and Conquer 3 Tiberium Wars",      "Tiberium Wars" },
+        new[] { "Command and Conquer 3 - Kane's Wrath",     "Kane's Wrath" },
+        new[] { "Command and Conquer Red Alert 3 - Uprising", "Red Alert 3 Uprising" },
+    };
+
+    // Installed supported games as (display name, folder).
+    static List<Tuple<string, string>> FindGames()
     {
         var libs = new List<string>();
         string steam = Registry.GetValue(@"HKEY_CURRENT_USER\Software\Valve\Steam", "SteamPath", null) as string
@@ -372,23 +399,31 @@ static class Program
         if (File.Exists(vdf))
             foreach (Match m in Regex.Matches(File.ReadAllText(vdf), "\"path\"\\s+\"(.+?)\""))
                 libs.Add(m.Groups[1].Value.Replace(@"\\", @"\"));
-        foreach (string l in libs.Distinct(StringComparer.OrdinalIgnoreCase))
-        {
-            string p = Path.Combine(l, @"steamapps\common\Command and Conquer Red Alert 3");
-            if (File.Exists(Path.Combine(p, "RA3.exe"))) return p;
-        }
-        throw new Exception("Steam copy of Red Alert 3 not found.");
+        var found = new List<Tuple<string, string>>();
+        foreach (var g in Games)
+            foreach (string l in libs.Distinct(StringComparer.OrdinalIgnoreCase))
+            {
+                string p = Path.Combine(l, @"steamapps\common", g[0]);
+                if (IsGameFolder(p)) { found.Add(Tuple.Create(g[1], p)); break; }
+            }
+        return found;
     }
 
-    // RA3.exe runs the highest-versioned RA3_<lang>_1.N.SkuDef.
+    static bool IsGameFolder(string dir)
+    {
+        try { return Directory.Exists(dir) && Directory.GetFiles(dir, "*_1.*.SkuDef").Length > 0; }
+        catch { return false; }
+    }
+
+    // The launcher runs the highest-versioned <prefix>_<lang>_1.N.SkuDef.
     static string LatestSkuDef(string game)
     {
-        var best = Directory.GetFiles(game, "RA3_*_1.*.SkuDef")
+        var best = Directory.GetFiles(game, "*_1.*.SkuDef")
             .Select(f => new { f, m = Regex.Match(Path.GetFileName(f), @"_1\.(\d+)\.SkuDef$", RegexOptions.IgnoreCase) })
             .Where(x => x.m.Success)
             .OrderByDescending(x => int.Parse(x.m.Groups[1].Value))
             .FirstOrDefault();
-        if (best == null) throw new Exception("No RA3 SkuDef found.");
+        if (best == null) throw new Exception("No SkuDef found in " + game);
         return best.f;
     }
 
@@ -409,81 +444,83 @@ static class Program
     static uint FindRenderFps(byte[] img)
     {
         var hits = Scan(img, FrameMsSig);
-        if (hits.Count != 1) throw new Exception("Unsupported RA3 build (frame limiter not found).");
+        if (hits.Count != 1) throw new Exception("Unsupported game build (frame limiter not found).");
         return BitConverter.ToUInt32(img, hits[0] + 9);
     }
 
-    static List<uint> FindSites(byte[] img, uint r, uint l)
+    // Frame-pacing reads of render_fps, found by what the code does so the same rules
+    // work for RA3 and C&C3. Never includes the fps*0.001 "framesPerMs" initializer:
+    // the particle code uses that as a fixed 30ths-of-a-second clock.
+    static List<uint> FindPacingSites(byte[] img, uint r, uint l)
     {
-        int[] R = Bytes(r), L = Bytes(l);
-        // name, pattern, offset of the render_fps operand, expected count
-        var sigs = new List<Tuple<string, int[], int, int>>
-        {
-            T("object rate",   Cat(new[] { 0xA1 }, R, new[] { 0x89, 0x86, 0xDC, 0x01, 0x00, 0x00 }), 1, 1),
-            T("ratio check",   Cat(new[] { 0xA1 }, R, new[] { 0x33, 0xD2, 0xF7, 0x35 }, L, new[] { 0x56, 0x8B, 0xF0, 0x83, 0xFE, 0x06 }), 1, 1),
-            T("main loop",     Cat(new[] { 0xA1 }, R, new[] { 0x33, 0xD2, 0xF7, 0x35 }, L, new[] { 0x8B, 0xF8, 0x83, 0xFF, 0x06 }), 1, 1),
-            T("mov esi",       Cat(new[] { 0x8B, 0x35 }, R, new[] { 0x0F, 0x8E, 0xAF, 0x00, 0x00, 0x00, 0xB8, 0x00, 0xFA, 0x00, 0x00 }), 2, 1),
-            T("timing fild",   Cat(new[] { 0xCC, 0x51, 0xA1 }, R, new[] { 0xDB, 0x05 }, R, new[] { 0x85, 0xC0, 0x7D, 0x06, 0xD8, 0x05 }), 9, 3),
-            T("frame limiter", Cat(FrameMsSig.Take(9).ToArray(), R, new[] { 0xA3 }), 9, 1),
-        };
+        int end = TextEnd(img);
+        byte[] R = BitConverter.GetBytes(r), L = BitConverter.GetBytes(l);
+        Func<int, byte[], bool> at = (i, b) => img[i] == b[0] && img[i + 1] == b[1] && img[i + 2] == b[2] && img[i + 3] == b[3];
         var sites = new List<uint>();
-        foreach (var s in sigs)
+        int tick = 0, ms64k = 0, objRate = -1, objHits = 0;
+
+        for (int i = 0x1002; i < end - 32; i++)
         {
-            var hits = Scan(img, s.Item2);
-            if (hits.Count != s.Item4)
-                throw new Exception(string.Format("Unsupported RA3 build ({0}: found {1}, expected {2}).", s.Item1, hits.Count, s.Item4));
-            foreach (int h in hits) sites.Add(ImageBase + (uint)(h + s.Item3)); // .text raw offset == RVA
+            if (!at(i, R)) continue;
+            uint va = ImageBase + (uint)i;
+
+            // Frame limiter: mov eax,1000 / xor edx,edx / div [fps]
+            if (img[i - 9] == 0xB8 && img[i - 8] == 0xE8 && img[i - 7] == 0x03 && img[i - 2] == 0xF7 && img[i - 1] == 0x35)
+            { sites.Add(va); continue; }
+
+            // Frames per logic tick: mov eax,[fps] / xor edx,edx / div [logic], then compared with 6
+            if (img[i - 1] == 0xA1 && img[i + 4] == 0x33 && img[i + 5] == 0xD2 && img[i + 6] == 0xF7 && img[i + 7] == 0x35 && at(i + 8, L))
+            {
+                bool cmp6 = false, push6 = false;
+                for (int k = i + 12; k < i + 24; k++)
+                {
+                    if (img[k] == 0x83 && img[k + 1] >= 0xF8 && img[k + 2] == 0x06) cmp6 = true;   // cmp reg,6
+                    if (img[k] == 0x6A && img[k + 1] == 0x06) push6 = true;                        // push 6 ...
+                    if (push6 && img[k] == 0x3B) cmp6 = true;                                      // ... cmp reg,reg
+                }
+                if (cmp6) { sites.Add(va); tick++; }
+                continue;
+            }
+
+            // mov reg,[fps] ... mov eax,64000
+            if (img[i - 2] == 0x8B && (img[i - 1] & 0xC7) == 0x05)
+            {
+                for (int k = i + 4; k < i + 24; k++)
+                    if (img[k] == 0xB8 && img[k + 1] == 0x00 && img[k + 2] == 0xFA && img[k + 3] == 0 && img[k + 4] == 0)
+                    { sites.Add(va); ms64k++; break; }
+                continue;
+            }
+
+            // Static initializers: push ecx / mov eax,[fps] / fild [fps] / (unsigned fixup) / op
+            // Redirect 1000/fps (fdivr) and fps (fstp); keep anything multiplied (time units).
+            if (img[i - 2] == 0x51 && img[i - 1] == 0xA1 && img[i + 4] == 0xDB && img[i + 5] == 0x05 && at(i + 6, R)
+                && img[i + 10] == 0x85 && img[i + 12] == 0x7D && img[i + 14] == 0xD8 && img[i + 15] == 0x05)
+            {
+                byte op1 = img[i + 20], op2 = img[i + 21];
+                if ((op1 == 0xD8 && op2 == 0x3D) || (op1 == 0xD9 && op2 == 0x1D)) sites.Add(va + 6);
+                continue;
+            }
+
+            // Object field set to the frame rate in a constructor: mov eax,[fps] / mov [esi+x],eax
+            if (img[i - 1] == 0xA1 && img[i + 4] == 0x89 && img[i + 5] == 0x86 && img[i + 8] == 0 && img[i + 9] == 0)
+            { objRate = i; objHits++; }
         }
+        if (objHits == 1) sites.Add(ImageBase + (uint)objRate);
+
+        if (!sites.Any(s => BitConverter.ToUInt32(img, (int)(s - ImageBase)) == r && img[(int)(s - ImageBase) - 9] == 0xB8))
+            throw new Exception("Unsupported game build (frame limiter not found).");
+        if (tick < 2)
+            throw new Exception("Unsupported game build (main loop not found).");
+        sites.Sort();
         return sites;
     }
 
-    // Every other read of render_fps, minus the ones that derive the logic rate
-    // (mov eax,[R] / shr eax,1 initializers, and [R] / [L] divisions).
-    static List<uint> FindExtraSites(byte[] img, uint r, uint l, List<uint> core)
+    // End of the .text section in the file (raw offset == RVA in these games).
+    static int TextEnd(byte[] img)
     {
-        byte[] R = BitConverter.GetBytes(r), L = BitConverter.GetBytes(l);
-        var twoByte = new[] { "8B0D", "8B15", "8B35", "DB05", "F735", "0FAF05", "0FAF0D", "3B05", "3B0D" };
-        var list = new List<uint>();
-        for (int i = 0x1003; i < 0x7D0000; i++)
-        {
-            if (img[i] != R[0] || img[i + 1] != R[1] || img[i + 2] != R[2] || img[i + 3] != R[3]) continue;
-            uint va = ImageBase + (uint)i;
-            if (core.Contains(va)) continue;
-            string p2 = img[i - 2].ToString("X2") + img[i - 1].ToString("X2");
-            string p3 = img[i - 3].ToString("X2") + p2;
-            bool read = img[i - 1] == 0xA1 || twoByte.Contains(p2) || twoByte.Contains(p3);
-            if (!read) continue;
-            if (img[i + 4] == 0xD1 && img[i + 5] >= 0xE8 && img[i + 5] <= 0xEF) continue;  // R/2 (shr reg,1) -> logic rate
-            bool divL = false;
-            for (int k = i + 4; k < i + 10; k++)
-                if (img[k] == 0xF7 && img[k + 1] == 0x35 && img[k + 2] == L[0] && img[k + 3] == L[1] && img[k + 4] == L[2] && img[k + 5] == L[3]) divL = true;
-            if (divL) continue;
-            list.Add(va);
-        }
-        return list;
-    }
-
-    // Reads of frame_ms (ms per render frame) outside the frame limiter itself: the
-    // ms -> frame conversions used by effect durations. Returns operand VAs.
-    static List<uint> FindFrameMsReaders(byte[] img, uint frameMs)
-    {
-        byte[] F = BitConverter.GetBytes(frameMs);
-        var hits = new List<int>();
-        for (int i = 0x1003; i < 0x7D0000; i++)
-            if (img[i] == F[0] && img[i + 1] == F[1] && img[i + 2] == F[2] && img[i + 3] == F[3]) hits.Add(i);
-        // The limiter accumulates a deadline with `add eax,[frame_ms]`; leave that function alone.
-        var limiter = hits.Where(i => img[i - 2] == 0x03 && img[i - 1] == 0x05).ToList();
-        var list = new List<uint>();
-        foreach (int i in hits)
-        {
-            if (limiter.Any(l => Math.Abs(l - i) < 0x100)) continue;
-            string p2 = img[i - 2].ToString("X2") + img[i - 1].ToString("X2");
-            string p3 = img[i - 3].ToString("X2") + p2;
-            bool read = img[i - 1] == 0xA1 || p2 == "F73D" || p2 == "8B0D" || p2 == "8B15" || p2 == "8B35"
-                        || p3 == "0FAF05" || p3 == "0FAF0D";
-            if (read) list.Add(ImageBase + (uint)i);
-        }
-        return list;
+        int pe = BitConverter.ToInt32(img, 0x3C);
+        int sec = pe + 24 + BitConverter.ToUInt16(img, pe + 20);
+        return (int)(BitConverter.ToUInt32(img, sec + 20) + BitConverter.ToUInt32(img, sec + 16));
     }
 
     // TheFXParticleSystemManager's per-frame update (vtable +14h) first calls the simulation
@@ -537,45 +574,6 @@ static class Program
         Write(proc, site, call.ToArray());
         VirtualProtectEx(proc, (IntPtr)site, (UIntPtr)5, old, out old);
     }
-
-    // Code that reads a float constant from .rdata via a [disp32] operand. Used to find the
-    // hardcoded 30 fps assumptions (1/30 s time steps, 30.0 rates) in render code.
-    static List<uint> FindConstReaders(byte[] img, uint bits)
-    {
-        var addrs = new List<uint>();
-        for (int o = 0x7CE000; o + 4 <= Math.Min(img.Length, 0x8B3000); o += 4)
-            if (BitConverter.ToUInt32(img, o) == bits) addrs.Add(ImageBase + (uint)o);
-        var list = new List<uint>();
-        foreach (uint a in addrs)
-        {
-            byte[] A = BitConverter.GetBytes(a);
-            for (int i = 0x1003; i < 0x7D0000; i++)
-                if (img[i] == A[0] && img[i + 1] == A[1] && img[i + 2] == A[2] && img[i + 3] == A[3]
-                    && (img[i - 1] & 0xC7) == 0x05)   // modrm: mod=00, rm=101 -> [disp32]
-                    list.Add(ImageBase + (uint)i);
-        }
-        list.Sort();
-        return list;
-    }
-
-    // "all", or comma-separated indices/ranges into the extra list, e.g. "0-20,25".
-    static List<uint> SelectExtra(List<uint> extra, string spec)
-    {
-        if (spec == null || spec == "none") return new List<uint>();
-        if (spec == "all") return extra;
-        var pick = new List<uint>();
-        foreach (string part in spec.Split(','))
-        {
-            string[] ab = part.Split('-');
-            int a = int.Parse(ab[0]), b = ab.Length > 1 ? int.Parse(ab[1]) : a;
-            for (int k = a; k <= b && k < extra.Count; k++) pick.Add(extra[k]);
-        }
-        return pick;
-    }
-
-    static Tuple<string, int[], int, int> T(string n, int[] p, int o, int c) { return Tuple.Create(n, p, o, c); }
-    static int[] Bytes(uint v) { return BitConverter.GetBytes(v).Select(b => (int)b).ToArray(); }
-    static int[] Cat(params int[][] parts) { return parts.SelectMany(p => p).ToArray(); }
 
     static List<int> Scan(byte[] d, int[] pat)
     {

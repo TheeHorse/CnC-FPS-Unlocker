@@ -1,4 +1,4 @@
-# How RA3 High FPS works
+# How C&C FPS Unlocker works
 
 Notes for anyone who wants to build on this (hi, C&C:Online folks). Addresses are for the current Steam `RA3_1.13.game` (EA's 2025 rebuild, PE timestamp `0x67B7A95B`). The launcher finds everything by byte signature, so small updates might still work. Run it with `--check` to see.
 
@@ -43,8 +43,29 @@ Guessing didn't work: tick rate, frame_ms conversions, 1/30 and 30.0 constants a
 3. Snapshot every draw call (`-S "<range>/draw"`) in one bad frame and the good frame after it, then diff them draw by draw. They were identical up to draw #570, a 4-particle GPU batch drawn into the water reflection.
 4. Everything bound for that draw was identical between the two frames (shader, textures, render states, vertex data), except the shader clock `c38`. The vertex data's birth times were exactly 4.00x the clock at 120 fps, which pointed straight at the fps-derived time conversion.
 
+## Tiberium Wars and Kane's Wrath
+
+C&C3 and Kane's Wrath have the same design: render 30 and logic 15 sitting next to each other, the same frame limiter, the same sub-step main loop and the same static initializers, including the `framesPerMs = fps * 0.001` one that the particle code uses. The code is compiled differently though, so exact byte signatures don't carry over. Since v1.1 the launcher finds the pacing reads by behaviour:
+
+| What | How it's recognised |
+|---|---|
+| frame limiter | `mov eax,1000 / xor edx,edx / div [fps]` |
+| frames per logic tick | `mov eax,[fps] / xor edx,edx / div [logic]` followed by a compare against 6 (`cmp reg,6`, or `push 6 ... cmp`) |
+| the 64000 site | `mov reg,[fps]` with `mov eax,64000` right after |
+| static initializers | `fild [fps]` followed by `fdivr` (1000/fps) or `fstp` (fps). Anything followed by `fmul` is a time conversion and is left alone. |
+| object field | the single `mov eax,[fps] / mov [esi+x],eax` in a constructor |
+
+On RA3 this picks exactly the 7 sites the hand-tuned version used. Addresses found:
+
+- **Tiberium Wars** (`RetailExe\1.10\cnc3game.dat`): render `0xB877C4`, sites `0x548132 0x55D94F 0x55DDDF 0x865660 0xA24B9D 0xA24BE5 0xA26A95`
+- **Kane's Wrath** (`RetailExe\1.3\cnc3ep1.dat`): render `0xB7D4D0`, sites `0x5ADCEF 0x5C3C4E 0x5C40DF 0x81AC72 0xA06308 0xA06350 0xA07349`
+
+The RA3 particle-simulation throttle doesn't find its hook in C&C3 (the particle manager is compiled differently), and neither game needs it: both run at 120 with no flicker and normal speed.
+
+The game folder comes from Steam's `%command%` (the first `.exe` argument, e.g. `RA3.exe`, `CNC3.exe` or `CNC3EP1.exe`), and the real exe comes from the newest `*_1.N.SkuDef` in that folder.
+
 ## Known leftovers
 
 - Particles simulate at 30 Hz (like stock), so smoke motion is a little less smooth than units. Try `--pfx off` if you want to experiment.
 - A small UI pulse calculation reads the render rate in a form I didn't bother redirecting. I haven't seen it matter.
-- Only tested on the Steam 1.13 build. 1.12 has the same code layout and the signatures match there too, but I haven't played it.
+- Only tested on the current Steam builds (RA3 1.13, Tiberium Wars 1.10, Kane's Wrath 1.3).
