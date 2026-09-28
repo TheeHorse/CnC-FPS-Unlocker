@@ -1,0 +1,4 @@
+# Built binaries are published as GitHub Release assets, not committed.
+*.exe
+*.zip
+RA3HighFps.ini
