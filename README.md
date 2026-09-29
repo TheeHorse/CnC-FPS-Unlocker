@@ -1,113 +1,115 @@
 # C&C FPS Unlocker
 
-Play **Red Alert 3**, **C&C 3: Tiberium Wars** and **C&C 3: Kane's Wrath** at 60, 120, 165, whatever fps. Free, open source, and it works with Tacitus / C&C:Online.
+Play **Red Alert 3**, **C&C 3: Tiberium Wars** and **Kane's Wrath** at 60, 120, 165 or whatever fps you want. Free, open source, works with Tacitus / C&C:Online.
 
-These games are locked to 30 fps, and just unlocking them makes the whole game run faster. This keeps the game at normal speed and only makes it smoother, with no effect flicker.
+These games are locked to 30 fps and if you just unlock them the whole game speeds up. This keeps the game speed normal and only makes it smoother. No effect flicker either.
 
 ![Setup window](docs/screenshot.png)
 
 ## Install
 
-1. Download `CnC-FPS-Unlocker-Setup.exe` from [Releases](../../releases).
-2. Run it. It finds your installed games; untick any you don't want, pick a frame rate, and hit **Install**.
-3. It shows one line per game. In Steam, right-click each game > **Properties** > **Launch Options** and paste its line (there's a Copy button). You only do this once.
-4. Play from Steam like normal.
+1. Grab `CnC-FPS-Unlocker-Setup.exe` from [Releases](../../releases)
+2. Run it. It finds your games, untick any you don't want, pick a frame rate and hit **Install**
+3. It gives you one line per game. In Steam right-click the game > **Properties** > **Launch Options** and paste it in (there's a Copy button). Only have to do this once
+4. Play from Steam like normal
 
-To change the fps later, run the setup again, or edit `RA3HighFps.ini` in the game's folder.
-To uninstall, clear the Launch Options box in Steam.
+To change fps later just run the setup again, or edit `RA3HighFps.ini` in the game folder.
+To uninstall, clear the launch options box in Steam.
 
-Needs the **Steam** versions (current updates: RA3 1.13, Tiberium Wars 1.10, Kane's Wrath 1.3).
+Needs the **Steam** versions (RA3 1.13, Tiberium Wars 1.10, Kane's Wrath 1.3).
 
 ### Drop-in version (no installer, no exe) - testing
 
-Still being tested on non-Steam copies, so treat it as a beta until it's verified. If something's off, please open an issue.
+This one's still being tested on non-Steam copies so treat it as a beta for now. If something's off open an issue.
 
-For non-Steam copies, or if you'd rather just copy files: download `CnC-FPS-Unlocker-DropIn.zip` from [Releases](../../releases) and copy the three files for your game next to the game's real executable:
+For non-Steam copies or if you'd rather just copy files: grab `CnC-FPS-Unlocker-DropIn.zip` from [Releases](../../releases) and put the three files for your game next to the game's actual exe:
 
-| Game | Files | Copy into |
+| Game | Files | Put them in |
 |---|---|---|
 | Red Alert 3 (1.12 / 1.13) | `d3d9.dll`, `CnCFpsUnlocker.dll`, `RA3HighFps.ini` | `<RA3>\Data\` |
 | Tiberium Wars (1.10) | `dinput8.dll`, `CnCFpsUnlocker.dll`, `RA3HighFps.ini` | `<TW>\RetailExe\1.10\` |
 | Kane's Wrath (1.3) | `dinput8.dll`, `CnCFpsUnlocker.dll`, `RA3HighFps.ini` | `<KW>\RetailExe\1.3\` |
 
-Then start the game however you normally do. Settings are in `RA3HighFps.ini`; to uninstall, delete the dll. The game loads the dll from its own folder, it passes everything through to the real Windows one and applies the same in-memory fixes. Works alongside Tacitus (C&C:Online), and it's fine to have both this and the Steam launch option, it only patches once. Source is in [`dll/`](dll).
+Then launch the game however you normally do. Settings are in `RA3HighFps.ini`, and to uninstall just delete the dll. The game loads the dll from its own folder, it passes everything through to the real Windows one and does the same fixes as the normal version. Works with Tacitus, and having both this and the Steam launch option is fine, it only patches once. Source is in [`dll/`](dll).
 
 ## Picking a frame rate
 
-It has to be a multiple of 15 (60, 75, 90, 120, 135, 165, 240...). These games tick 15 times a second, so each tick needs a whole number of frames or the game speed drifts. If you have a 144 Hz monitor, use 135. It never goes above your monitor's refresh rate (it rounds down to a multiple of 15), since the game can't draw faster than the screen anyway.
+Has to be a multiple of 15 (60, 75, 90, 120, 135, 165, 240...). The game ticks 15 times a second so every tick needs a whole number of frames or the speed drifts. 144hz monitor? Use 135. It won't go above your monitor's refresh rate anyway since the game can't draw faster than your screen.
 
-**Game speed stays correct even if your PC can't keep up.** The unlocker schedules the game's logic by the clock instead of by counting frames, so if you set 120 and your PC only draws 80, the game still runs at normal speed (it just looks a bit less smooth). That goes for every frame rate you pick.
+**Game speed stays right even if your PC can't keep up.** Game logic runs off the clock now instead of counting frames, so if you set 120 and only get 80 the game still runs at normal speed, it just looks a bit less smooth.
 
-Before v1.6 this wasn't the case: RA3 ran about 33% fast at 120 and much faster at 240 (the engine was only built for up to 90), Tiberium Wars and Kane's Wrath ran slow whenever the PC dropped below the target, and every setting was a few percent fast from a rounding error in the frame limiter.
+Before v1.6 that wasn't true. RA3 ran about 33% fast at 120 and way faster at 240 (the engine was only made to go up to 90), TW and KW went slow-mo whenever your fps dropped below the target, and every setting was a few % fast because of a rounding thing in the frame limiter.
 
 ## Known issues
 
-- **240 fps is experimental** until it's had more testing; some people have had problems with it. If you have a 240 Hz monitor and run into issues, try 165 or 120.
-- Some effects play too fast (e.g. RA3 power plant fog), and the TW/KW Ion Cannon hit effect looks off ([#4](../../issues/4), [#5](../../issues/5))
+- **240 fps is experimental** until it's been tested more, some people have had problems with it. If you're on a 240hz monitor and something's weird try 165 or 120
+- Some effects still play too fast (like the RA3 power plant fog) and the TW/KW Ion Cannon hit looks off ([#4](../../issues/4), [#5](../../issues/5))
 
-For what it's worth, the paid SageMetaTool has these too. They're next on my list.
+For what it's worth the paid SageMetaTool has these too. They're next on my list.
 
 ## Extras
 
-The setup has an **Extras...** button for things that aren't about frame rate. They're all off unless you turn them on.
+The setup has an **Extras...** button for stuff that isn't about frame rate. All off unless you turn them on.
 
-- **Camera zoom-out (Red Alert 3):** lets the camera zoom out further (1.25x, 1.5x or 1.75x the normal limit). It only works in skirmish and campaign; online and LAN games always use the normal zoom, so nobody gets an advantage. Going much past 1.75x makes the ground stop drawing at the top of the screen, which is why that's the max for now.
+- **Camera zoom-out (RA3):** lets you zoom out further (1.25x, 1.5x or 1.75x). Only in skirmish and campaign, online and LAN always use normal zoom so nobody gets an advantage. Past 1.75x the ground stops drawing at the top of the screen so that's the max for now
+
 ## Is it safe?
 
-- It doesn't modify any game files. It starts the normal game, changes a few timing values in memory while it's starting up, and that's it.
-- The source is right here in `src/RA3HighFps.cs`, plain C#. If you don't trust the exe (fair), download the repo and run `build-from-source.bat` to build it yourself. It uses the C# compiler that already comes with Windows.
-- Some antivirus programs don't like unsigned exes that touch another program's memory. That's why the source is public.
+- It doesn't touch any game files. It starts the normal game, changes a few timing values in memory while it's starting, and that's it
+- Source is right here in `src/RA3HighFps.cs`, plain C#. If you don't trust the exe (fair enough) download the repo and run `build-from-source.bat` to build it yourself. It uses the C# compiler that already comes with Windows
+- Some antivirus programs don't like unsigned exes that mess with another program's memory. That's why the source is public
 
 ## Online
 
-A C&C:Online admin told me it won't get anyone banned. Only the rendering changes, and game logic is identical to everyone else's. I'd still say use it online at your own risk, and ask on their Discord if you're unsure.
+A C&C:Online admin told me it won't get anyone banned. Only the rendering changes, game logic is the same as everyone else's. Still, use it online at your own risk and ask on their Discord if you're not sure.
 
 ## How it works (short version)
 
-These games use one number, 30, for two different things: how often they draw a frame, and as a clock for effects (particles count time in 30ths of a second). Old unlock methods change both. Then particles get stamped with birth times from the "future", and you get giant white or colored flashes whenever something shoots, especially near water. This only changes the first one.
+These games use the number 30 for two different things: how often they draw a frame, and as a clock for effects (particles count time in 30ths of a second). Old unlock methods change both, so particles get birth times from the "future" and you get huge white or colored flashes whenever something shoots, especially near water. This only changes the first one.
 
-It finds the right spots by what the code does rather than hardcoded addresses, which is why the same exe works across all three games.
+It finds what to patch by what the code does instead of hardcoded addresses, which is why one exe works for all three games.
 
-The full story, including how I tracked the flicker down with a frame-by-frame graphics capture, is in [docs/TECHNICAL.md](docs/TECHNICAL.md).
+The full story, including how I tracked down the flicker with a frame by frame graphics capture, is in [docs/TECHNICAL.md](docs/TECHNICAL.md).
 
 ## What about other C&C games?
 
-- **Generals / Zero Hour**: logic and rendering share one clock, so this trick can't work. See [TheSuperHackers/GeneralsGameCode](https://github.com/TheSuperHackers/GeneralsGameCode), which works from EA's released source.
-- **Red Alert 2 / Tiberian Sun**: different engine entirely, same problem.
-- **RA3 Uprising**: the setup detects it, and it should work (same engine), but I haven't been able to test it myself. Let me know!
+- **Generals / Zero Hour**: logic and rendering use the same clock so this trick doesn't work. Check out [TheSuperHackers/GeneralsGameCode](https://github.com/TheSuperHackers/GeneralsGameCode), they work from EA's released source
+- **Red Alert 2 / Tiberian Sun**: totally different engine, same problem
+- **RA3 Uprising**: the setup finds it and it should work (same engine) but I haven't been able to test it. Let me know!
 
 ## Older versions and mods
 
-Easiest way: tick **"Show a mod & version picker when the game starts"** in the setup. Every time you launch RA3 you get a small window where you pick a mod (it lists what's in `Documents\Red Alert 3\Mods`, or browse to a `.skudef`) and a game version. On "Auto" it uses whatever version the mod asks for, so mods that need 1.12 just work. It remembers your last pick.
+Easiest way: tick **"Show a mod & version picker when the game starts"** in the setup. Every time you launch you get a little window to pick a mod (it lists what's in `Documents\Red Alert 3\Mods`, or browse to a `.skudef`) and a game version. On "Auto" it uses whatever version the mod wants, so mods that need 1.12 just work. It remembers what you picked last.
 
-The normal RA3 launcher options also still work, just put them **after** `%command%` in the Steam launch options:
+The normal RA3 launcher options still work too, put them **after** `%command%` in the Steam launch options:
 
-- `-runver 1.12` runs the 1.12 version instead of the newest one (a lot of mods need 1.12)
+- `-runver 1.12` runs 1.12 instead of the newest version (lots of mods need 1.12)
 - `-modConfig "C:\path\to\mod\mod.skudef"` loads a mod
 
-For example, a mod that needs 1.12:
+Like this for a mod that needs 1.12:
 
 ```
 "...\RA3HighFps.exe" %command% -runver 1.12 -modConfig "C:\path\to\mod\mod.skudef"
 ```
 
-`-ui` (the old launcher window where you pick a version or mod) doesn't work with the unlocker, because the unlocker replaces that launcher. Use the two options above instead. Mod launchers that start the game themselves skip Steam, so the unlocker doesn't run with those either.
+`-ui` (the old launcher window) doesn't work since the unlocker replaces that launcher, use the options above instead. Mod launchers that start the game themselves skip Steam, so the unlocker won't run with those.
 
 ## Advanced options
 
-Put these in the Steam launch options, before `%command%`:
+These go in the Steam launch options, before `%command%`:
 
 - `--fps 90` overrides the ini for one launch
-- `--lang german` forces a language. Normally it uses the language Steam installed, then your Windows language.
-- `--pfx off` stops RA3's particles from simulating at 30 Hz (they look a bit smoother, but I haven't tested it much)
-- `--check "<path to the game's .game/.dat exe>"` is a dry run that writes a report of which code locations it would patch. Useful if an update breaks it.
+- `--lang german` forces a language. Normally it uses whatever language Steam installed, then your Windows language
+- `--pfx off` lets RA3's particles simulate faster than 30hz (a bit smoother, not tested much)
+- `--check "<path to the game's .game/.dat exe>"` dry run, writes a report of what it would patch. Handy if an update breaks it
 
 ## Credits
 
-- [red-alert-3-60fps-mod](https://github.com/isma3iloiso/red-alert-3-60fps-mod) by isma3iloiso, whose patch notes pointed me at the render fps value in the first place.
-- [apitrace](https://github.com/apitrace/apitrace), which made it possible to find the flicker.
-- Not affiliated with EA or C&C:Online. Command & Conquer, Red Alert and Tiberium are trademarks of Electronic Arts.
+- [red-alert-3-60fps-mod](https://github.com/isma3iloiso/red-alert-3-60fps-mod) by isma3iloiso, their patch notes pointed me at the render fps value in the first place
+- [CNCStuff/cnc3_fps_patch](https://github.com/CNCStuff/cnc3_fps_patch), which found some of the C&C3 fixes (frame limiter, scroll, anim timing)
+- [apitrace](https://github.com/apitrace/apitrace), couldn't have found the flicker without it
+- Not affiliated with EA or C&C:Online. Command & Conquer, Red Alert and Tiberium are trademarks of Electronic Arts
 
-Licensed under the GNU GPL v3 (see LICENSE): you're free to use, share and change it, but anything built from this code has to stay open source under the same license and keep the credit. Versions up to v1.5 were released under MIT.
+GPL v3 (see LICENSE). Use it, share it, change it, but anything built from this code has to stay open source under the same license and keep the credit. Versions up to v1.5 were MIT.
 
-— TheeHorse
+- TheeHorse
