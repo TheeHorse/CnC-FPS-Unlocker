@@ -28,6 +28,7 @@ Before v1.6 this wasn't the case: RA3 ran about 33% fast at 120 and much faster 
 
 ## Known issues
 
+- Unit movement can hitch slightly at some frame rates (120 included). Game speed itself is correct. Being worked on.
 - Some effects play too fast (e.g. RA3 power plant fog), and the TW/KW Ion Cannon hit effect looks off ([#4](../../issues/4), [#5](../../issues/5))
 
 For what it's worth, the paid SageMetaTool has these too. They're next on my list.
