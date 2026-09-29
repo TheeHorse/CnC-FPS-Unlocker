@@ -72,6 +72,14 @@ The build-up progress lives in `StructureUnpackUpdate` (RA3 1.13 `0x71FE90`). It
 
 The fix replaces both `getFrame()` reads in that function with the current logic frame run through the exact same conversion, so both sides are in the same units. The rising model (W3D animation mode at `0x937DCF`, frame = progress x last frame) and the bar on the building both read this progress, so both are fixed. Found by a masked byte pattern: `0x71FED6` in 1.13 and `0x735116` in 1.12.
 
+## Game speed above 90 fps (RA3)
+
+RA3 splits every 15 Hz logic tick into 6 phases. Below 90 fps it batches several phases per frame. At 90 and above it runs one phase per frame, and after phase 6 it starts the next tick straight away, so a tick always takes 6 frames. That's exact at 90, but at 120 it gave 20 ticks/s (33% fast) and at 240 it gave 40. Measured by reading the logic frame counter over 20 seconds.
+
+The per-frame engine update (`0x62B920`) is hooked at two spots. When frames per tick `R = fps/15` is above 6, phase `p` only runs once the tick has had `ceil(k*6/R)` frames (`k` = frames since the tick started), and a new tick starts only after `R` frames. At 120 that's phase 1, 2, 3, idle, 4, 5, 6, idle. Phase 1 still gets exactly one frame, so the network code that runs at tick boundaries is untouched. On every frame the tick-interpolation value that drawables use to blend between logic states (`[engine+60h]`) is set to `k/R`, so units move smoothly through the idle frames. At 90 and below the hook does nothing. Measured after the fix: 14.99 ticks/s at 119.9 fps.
+
+The frame limiter also truncated its per-frame budget to whole milliseconds (`trunc(66.67 / R)`): 8 ms at 120 fps is really 125 fps, about 4% fast (same at 60 and 240; 90 and stock 30 are about 1% fast). It now carries the dropped fraction into the next frame (8, 8, 9, ...). The same fix is applied to Tiberium Wars and Kane's Wrath, where the limiter calls `_ftol` instead (that block was found by CNCStuff/cnc3_fps_patch).
+
 ## Known leftovers
 
 - Particles simulate at 30 Hz (like stock), so smoke motion is a little less smooth than units. Try `--pfx off` if you want to experiment.

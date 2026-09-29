@@ -20,9 +20,11 @@ Needs the **Steam** versions (current updates: RA3 1.13, Tiberium Wars 1.10, Kan
 
 ## Picking a frame rate
 
-It has to be a multiple of 15 (60, 75, 90, 120, 135, 165, 240...). These games tick 15 times a second, so each tick needs a whole number of frames or the game speed drifts. If you have a 144 Hz monitor, use 135.
+It has to be a multiple of 15 (60, 75, 90, 120, 135, 165, 240...). These games tick 15 times a second, so each tick needs a whole number of frames or the game speed drifts. If you have a 144 Hz monitor, use 135. It never goes above your monitor's refresh rate (it rounds down to a multiple of 15), since the game can't draw faster than the screen anyway.
 
 **Pick a frame rate your PC can actually hold.** The game advances one tick every few frames, so if your PC can't keep up (say you set 120 but it only draws 60), the whole game runs in slow motion. The stock game does the same thing below 30 fps. On a laptop running on battery, 60 is a safer bet.
+
+Since v1.5 game speed is exact at any setting. Before that, RA3 ran about 33% fast at 120 and much faster at 240 (the engine was only built for up to 90), and every setting was a few percent fast from a rounding error in the frame limiter.
 
 ## Known issues
 
