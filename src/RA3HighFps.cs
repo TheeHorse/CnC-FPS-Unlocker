@@ -377,19 +377,20 @@ static class Program
             Controls.Add(new Label { Text = "Amount:", AutoSize = true, Location = new Point(34, 68) });
             foreach (float a in Amounts) amountBox.Items.Add(a.ToString("0.##", System.Globalization.CultureInfo.InvariantCulture) + "x");
             int idx = Array.FindIndex(Amounts, a => Math.Abs(a - current) < 0.01f);
-            amountBox.SelectedIndex = idx >= 0 ? idx : Amounts.Length - 1;
+            amountBox.SelectedIndex = idx >= 0 ? idx : 1;   // 1.5x
             amountBox.Bounds = new Rectangle(95, 65, 70, 23);
             amountBox.Enabled = zoomBox.Checked;
             zoomBox.CheckedChanged += (s, e) => amountBox.Enabled = zoomBox.Checked;
             Controls.Add(amountBox);
-            Controls.Add(new Label { AutoSize = false, Bounds = new Rectangle(34, 96, 330, 48), ForeColor = SystemColors.GrayText,
-                                     Text = "Red Alert 3 only. Works in skirmish and campaign; online and LAN games always use the normal zoom." });
+            Controls.Add(new Label { AutoSize = false, Bounds = new Rectangle(34, 96, 330, 80), ForeColor = SystemColors.GrayText,
+                                     Text = "Red Alert 3 only. Works in skirmish and campaign; online and LAN games always use the normal zoom.\n\n" +
+                                            "1.75x can cut off the top of the screen on maps with big height differences (water, cliffs)." });
 
-            var ok = new Button { Text = "OK", DialogResult = DialogResult.OK, Bounds = new Rectangle(208, 154, 75, 23) };
-            var cancel = new Button { Text = "Cancel", DialogResult = DialogResult.Cancel, Bounds = new Rectangle(289, 154, 75, 23) };
+            var ok = new Button { Text = "OK", DialogResult = DialogResult.OK, Bounds = new Rectangle(208, 186, 75, 23) };
+            var cancel = new Button { Text = "Cancel", DialogResult = DialogResult.Cancel, Bounds = new Rectangle(289, 186, 75, 23) };
             Controls.AddRange(new Control[] { ok, cancel });
             AcceptButton = ok; CancelButton = cancel;
-            ClientSize = new Size(380, 190);
+            ClientSize = new Size(380, 222);
         }
     }
     class SetupForm : Form
@@ -454,10 +455,25 @@ static class Program
             foreach (var g in games) { float z; if (float.TryParse(ReadIni(IniPath(g.Item2), "zoom"), System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out z) && z > 1f) { zoomValue = z; break; } }
             var extras = new Button { Text = "Extras...", Bounds = new Rectangle(20, y + 62, 90, 23) };
             extras.Click += (s, e) => { using (var x = new ExtrasForm(zoomValue)) if (x.ShowDialog(this) == DialogResult.OK) zoomValue = x.Zoom; };
-            Controls.Add(extras);
+            var addFolder = new Button { Text = "Add game folder...", Bounds = new Rectangle(118, y + 62, 130, 23) };
+            Controls.AddRange(new Control[] { extras, addFolder });
             y += 100;
             Controls.Add(Line(y));
             var install = new Button { Text = "Install", Bounds = new Rectangle(324, y + 13, 75, 23), Enabled = games.Count > 0 };
+            // for games it didn't find (EA app / Origin / disc in odd places)
+            addFolder.Click += (s, e) =>
+            {
+                using (var d = new FolderBrowserDialog { Description = "Pick the game's install folder (the one with the .SkuDef files, e.g. ...\\Red Alert 3)" })
+                {
+                    if (d.ShowDialog(this) != DialogResult.OK) return;
+                    string dir = d.SelectedPath.TrimEnd('\\');
+                    if (!IsGameFolder(dir)) { MessageBox.Show(this, "That doesn't look like a supported game folder (no .SkuDef files in it).", "Setup"); return; }
+                    if (games.Any(g => string.Equals(Path.GetFullPath(g.Item2).TrimEnd('\\'), dir, StringComparison.OrdinalIgnoreCase))) return;
+                    games.Add(Tuple.Create(GameName(dir) + (IsSteamInstall(dir) ? "" : " (non-Steam)"), dir));
+                    gameList.Items.Add(games.Last().Item1, true);
+                    install.Enabled = true;
+                }
+            };
             var cancel = new Button { Text = "Cancel", Bounds = new Rectangle(405, y + 13, 75, 23) };
             cancel.Click += (s, e) => Close();   // not a dialog
             install.Click += (s, e) => Install();
@@ -477,12 +493,19 @@ static class Program
 
         void Install()
         {
-            var done = new List<Tuple<string, string>>();   // name, launch option
+            var done = new List<Tuple<string, string>>();   // name, launch option (null = drop-in, just play)
             try
             {
                 foreach (int i in gameList.CheckedIndices)
                 {
                     string dir = games[i].Item2;
+                    if (!IsSteamInstall(dir))
+                    {
+                        // no launch options outside steam, so install the drop-in dll next to the real exe
+                        InstallDropIn(dir, SelectedFps(), zoomValue);
+                        done.Add(Tuple.Create(games[i].Item1, (string)null));
+                        continue;
+                    }
                     string target = Path.Combine(dir, "RA3HighFps.exe");
                     if (!string.Equals(Path.GetFullPath(Application.ExecutablePath), Path.GetFullPath(target), StringComparison.OrdinalIgnoreCase))
                         File.Copy(Application.ExecutablePath, target, true);
@@ -492,6 +515,11 @@ static class Program
                     SetIni(IniPath(dir), "zoom", zoomValue.ToString("0.##", System.Globalization.CultureInfo.InvariantCulture));
                     done.Add(Tuple.Create(games[i].Item1, "\"" + target + "\" %command%"));
                 }
+            }
+            catch (UnauthorizedAccessException ex)
+            {
+                MessageBox.Show(this, "Couldn't write to the game folder:\n\n" + ex.Message + "\n\nRight-click the setup and pick \"Run as administrator\".", "Setup", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                return;
             }
             catch (Exception ex)
             {
@@ -518,15 +546,24 @@ static class Program
             ShowIcon = false;
             StartPosition = FormStartPosition.CenterScreen;
 
-            Controls.Add(new Label { Text = "Installed at " + fps + " fps. One last step for each game:", AutoSize = true,
+            bool steam = done.Any(d => d.Item2 != null);
+            Controls.Add(new Label { Text = "Installed at " + fps + " fps." + (steam ? " One last step for each Steam game:" : ""), AutoSize = true,
                                      Location = new Point(20, 18), Font = new Font(Font, FontStyle.Bold) });
             Controls.Add(new Label { AutoSize = true, Location = new Point(20, 42), UseMnemonic = false,
-                                     Text = "In Steam, right-click the game > Properties > Launch Options, and paste its line." });
+                                     Text = steam ? "In Steam, right-click the game > Properties > Launch Options, and paste its line."
+                                                  : "Start the games however you normally do." });
 
             int y = 74;
             foreach (var d in done)
             {
                 Controls.Add(new Label { Text = d.Item1, AutoSize = true, Location = new Point(20, y), UseMnemonic = false });
+                if (d.Item2 == null)
+                {
+                    Controls.Add(new Label { AutoSize = true, Location = new Point(20, y + 22), ForeColor = SystemColors.GrayText, UseMnemonic = false,
+                                             Text = "Ready, nothing else to do. Just start the game normally." });
+                    y += 56;
+                    continue;
+                }
                 var box = new TextBox { Text = d.Item2, ReadOnly = true, Bounds = new Rectangle(20, y + 20, 380, 23) };
                 var copy = new Button { Text = "Copy", Bounds = new Rectangle(405, y + 19, 75, 25) };
                 copy.Click += (s, e) => { Clipboard.SetText(box.Text); copy.Text = "Copied"; };
@@ -690,6 +727,24 @@ static class Program
     }
 
     static string IniPath(string game) { return Path.Combine(game, "RA3HighFps.ini"); }
+
+    // non-steam install: proxy dll + CnCFpsUnlocker.dll + ini next to the real exe (from the skudef's set-exe)
+    static void InstallDropIn(string game, int fps, float zoom)
+    {
+        string exe = Path.Combine(game, SetExe(LatestSkuDef(game, null)));
+        string dir = Path.GetDirectoryName(exe);
+        string proxy = exe.EndsWith(".game", StringComparison.OrdinalIgnoreCase) ? "d3d9.dll" : "dinput8.dll";   // ra3 : tw/kw
+        foreach (string name in new[] { proxy, "CnCFpsUnlocker.dll" })
+            using (var s = typeof(Program).Assembly.GetManifestResourceStream(name))
+            {
+                if (s == null) throw new Exception("This build doesn't include the drop-in files (" + name + "). Use the drop-in zip from the releases page instead.");
+                using (var f = File.Create(Path.Combine(dir, name))) s.CopyTo(f);
+            }
+        string ini = Path.Combine(dir, "RA3HighFps.ini");
+        if (!File.Exists(ini)) File.WriteAllLines(ini, new[] { "; C&C FPS Unlocker settings (fps: multiple of 15, 30-240; zoom: ra3 only, 1 = off)" });
+        SetIni(ini, "fps", fps.ToString());
+        SetIni(ini, "zoom", zoom.ToString("0.##", System.Globalization.CultureInfo.InvariantCulture));
+    }
 
     static int MonitorHz()
     {

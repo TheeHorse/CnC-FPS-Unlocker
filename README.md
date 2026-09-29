@@ -16,7 +16,9 @@ These games are locked to 30 fps and if you just unlock them the whole game spee
 To change fps later just run the setup again, or edit `RA3HighFps.ini` in the game folder.
 To uninstall, clear the launch options box in Steam.
 
-Needs the **Steam** versions (RA3 1.13, Tiberium Wars 1.10, Kane's Wrath 1.3).
+Tested on the **Steam** versions (RA3 1.13, Tiberium Wars 1.10, Kane's Wrath 1.3).
+
+**EA app / Origin / other non-Steam copies:** if the setup doesn't find your game, use **Add game folder...** and pick the game's install folder. Non-Steam games get the drop-in version installed (see below), so there's no launch option to set, just start the game like normal. If the game folder is in Program Files you might need to run the setup as administrator.
 
 ### Drop-in version (no installer, no exe) - testing
 
