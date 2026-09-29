@@ -104,6 +104,7 @@ static class Program
                 string.Join(", ", cs.Select(s => "0x" + s.ToString("X"))), ps, pm);
             report += string.Format("model transition step operand @0x{0:X}\n", FindModelTransitionStep(c));
             report += string.Format("structure build-up block @0x{0:X}\n", FindUnpackProgress(c));
+            report += "interpolation window checks: " + string.Join(", ", FindInterpWindow(c).Select(s => "0x" + s.ToString("X"))) + "\n";
             uint cno; report += string.Format("zoom max site @0x{0:X}, network object @0x{1:X}\n", FindZoomSite(c, out cno), cno);
             report += "fade frame reads: " + string.Join(", ", FindFadeFrameReads(c).Select(s => "0x" + s.ToString("X"))) + "\n";
             uint sbf, sbs = FindScrollBySlot(c, out sbf);
@@ -170,6 +171,7 @@ static class Program
         uint scrollFunc, scrollSlot = FindScrollBySlot(img, out scrollFunc);
         List<uint> fades = FindFadeFrameReads(img);
         uint netObject, zoomSite = FindZoomSite(img, out netObject);
+        List<uint> interpWindow = FindInterpWindow(img);
         SchedSite schedSite = FindScheduler(img);
         bool sched = schedSite != null;
 
@@ -199,6 +201,7 @@ static class Program
             if (zoom > 1f && zoomSite != 0) PatchZoom(pi.hProcess, zoomSite, netObject, zoom, (uint)mem + 0x98, (uint)mem + 0x4A0);   // extra: camera zoom-out (offline)
             if (fades.Count > 0) PatchFadeFrameReads(pi.hProcess, img, fades, (uint)mem, (uint)mem + 0x440);   // drawable fade timers
             if (scrollSlot != 0 && fps > 30) PatchScrollBy(pi.hProcess, scrollSlot, scrollFunc, fps, (uint)mem + 0x4F0, (uint)mem + 0x4F8, (uint)mem + 0x3C0);   // camera scroll speed
+            if (interpWindow.Count > 0) PatchInterpWindow(pi.hProcess, interpWindow, fps);   // drawables keep interpolating for the whole tick
             if (sched) PatchScheduler(pi.hProcess, img, schedSite, (uint)mem, (uint)mem);   // 15 ticks/s at any fps above 90
             if (limiter != 0) PatchLimiterRounding(pi.hProcess, limiter, limiterRA3, (uint)mem + 0x28, (uint)mem + 0x2C, (uint)mem + 0x280);   // exact frame pacing
             if (unpack != 0) PatchUnpack(pi.hProcess, img, unpack, (uint)mem + 0x200, sched ? (uint)mem + 0x3C : 0, (uint)mem + 0x4E0);   // Soviet/Empire build-up clock
@@ -1234,6 +1237,37 @@ static class Program
         VirtualProtectEx(proc, (IntPtr)site, (UIntPtr)10, old, out old);
     }
 
+    // RA3 drawables only interpolate for 6 drawn frames after their last logic update
+    // (`frame - [drawable+130h] >= 6` -> skip), the most frames a tick has at 90 fps. With more
+    // frames per tick, units froze for the rest of the tick and then jumped. Both checks get
+    // fps/15 + 2 instead.
+    static List<uint> FindInterpWindow(byte[] img)
+    {
+        var list = new List<uint>();
+        int[] pat = "2B 86 30 01 00 00 83 F8 06".Split(' ').Select(x => Convert.ToInt32(x, 16)).ToArray();
+        int end = TextEnd(img);
+        for (int i = 0x1000; i < end - pat.Length; i++)
+        {
+            int j = 0;
+            while (j < pat.Length && img[i + j] == pat[j]) j++;
+            if (j == pat.Length) list.Add(ImageBase + (uint)i + 8);   // the 06
+        }
+        return list.Count == 2 ? list : new List<uint>();
+    }
+
+    static void PatchInterpWindow(IntPtr proc, List<uint> sites, int fps)
+    {
+        byte frames = (byte)Math.Min(127, Math.Max(6, fps / 15 + 2));
+        foreach (uint s in sites)
+        {
+            uint old;
+            if (!VirtualProtectEx(proc, (IntPtr)s, (UIntPtr)1, PAGE_EXECUTE_READWRITE, out old))
+                throw new Exception("VirtualProtectEx failed.");
+            Write(proc, s, new[] { frames });
+            VirtualProtectEx(proc, (IntPtr)s, (UIntPtr)1, old, out old);
+        }
+    }
+
     // Tiny assembler for the stubs: raw bytes, labels, short jumps and rel32 calls/jumps.
     class Asm
     {
@@ -1320,7 +1354,8 @@ static class Program
     {
         Func<uint, byte[]> u = BitConverter.GetBytes;
         uint eng = mem + 0x3C, r = mem + 0x38, now3 = mem + 0x80, t0 = mem + 0x84, pend = mem + 0x88, k200 = mem + 0x8C;
-        uint stubA = mem + 0x800, stubB = mem + 0xA00;
+        uint stubA = mem + 0x800, stubB = mem + 0xA00, table = mem + 0xB0, tickFrame = mem + 0xC8, prevNow = mem + 0xCC;
+        foreach (var e in new[] { 0, 33, 67, 100, 133, 167 }.Select((v, i) => new { v, i })) Write(proc, table + (uint)(e.i * 4), BitConverter.GetBytes(e.v));
         uint exitGlobal = BitConverter.ToUInt32(img, (int)(site.Exit + 2 - ImageBase));   // mov ecx,[global] at the exit
         byte ph = site.Phase;
         Write(proc, k200, BitConverter.GetBytes(200f));
@@ -1346,17 +1381,20 @@ static class Program
         // phase 6 done: start the next tick once 66.67 ms have passed
         a.E(0x81, 0xFA); a.D(200); a.J(0x7C, "idle");
         a.E(0x81, 0x05); a.D(t0); a.D(200);                          // tickStart += 200
+        a.E(0xA3); a.D(tickFrame);                                   // the frame this tick really starts on (for the interpolation)
         a.E(0xC7, 0x05); a.D(pend); a.D(1);
         a.E(0x8B, 0xD0, 0x2B, 0x15); a.D(t0);                        // more than 2 ticks behind: resync
         a.E(0x81, 0xFA); a.D(400); a.J(0x7E, "pass");
         a.E(0xA3); a.D(t0); a.J(0xEB, "pass");
         a.L("mid");
-        // phases due = 1 + floor(t * 6 / 200), capped at 6: phase k runs once (k-1)/6 of the tick has passed, as in stock timing
-        a.E(0x8D, 0x04, 0x52, 0x85, 0xC0); a.J(0x7D, "pos"); a.E(0x33, 0xC0);
-        a.L("pos");
-        a.E(0x33, 0xD2, 0x51, 0xB9, 0x64, 0, 0, 0, 0xF7, 0xF1, 0x59, 0x40);
-        a.E(0x83, 0xF8, 0x06); a.J(0x76, "cap"); a.E(0xB8, 6, 0, 0, 0);
-        a.L("cap");
+        // phases due = how many entries of the timetable T[0..5] are <= t (phase k runs once t >= T[k-1]).
+        // Phases 3-6 update the objects in buckets (movement), so they're spread evenly over the tick
+        // (1/8, 3/8, 5/8, 7/8); phase 2 (a few managers) rides along with phase 3.
+        a.E(0x33, 0xC0);
+        a.L("scan");
+        a.E(0x3B, 0x14, 0x85); a.D(table); a.J(0x7C, "counted");      // cmp edx,[T + eax*4] / jl
+        a.E(0x40, 0x83, 0xF8, 0x06); a.J(0x72, "scan");
+        a.L("counted");
         a.E(0x3B, 0xC1); a.J(0x76, "idle");                          // nothing due this frame
         a.L("loop");                                                 // run all but the last due phase here
         a.E(0x8D, 0x51, 0x01, 0x3B, 0xD0); a.J(0x73, "pass");
@@ -1370,18 +1408,23 @@ static class Program
 
         // Stub B, called in place of `mov ecx,[global]` at the exit: interpolation = time fraction of the tick.
         var b = new Asm(stubB);
-        // Interpolation = t/200 + 1/6: after phase k it reads k/6, like the stock engine, but moves every frame.
-        b.E(0x50);
-        b.E(0xA1); b.D(now3); b.E(0x2B, 0x05); b.D(t0);
-        b.E(0x83, 0xC0, 0x21);                                        // + 33 units (one phase)
+        // Interpolation = (time since the frame this tick started + this frame's length) / 200, capped at 1:
+        // the frame a tick starts on reads one frame's worth and the last frame before the next tick
+        // reads ~1, so it rises evenly (1/8, 2/8 ... 8/8 at 120 fps) with no frozen frames.
+        b.E(0x50, 0x52);
+        b.E(0xA1); b.D(now3); b.E(0x8B, 0xD0, 0x2B, 0x15); b.D(prevNow);   // edx = frame length
+        b.E(0xA3); b.D(prevNow);
+        b.E(0x85, 0xD2); b.J(0x7D, "dpos"); b.E(0x33, 0xD2);
+        b.L("dpos");
+        b.E(0x83, 0xFA, 0x64); b.J(0x7E, "dok"); b.E(0xBA); b.D(100);         // clamp to 0..100 units
+        b.L("dok");
+        b.E(0x2B, 0x05); b.D(tickFrame); b.E(0x03, 0xC2);                    // eax = now - tickFrame + frame length
         b.E(0x85, 0xC0); b.J(0x7D, "b1"); b.E(0x33, 0xC0);
         b.L("b1");
         b.E(0x3D); b.D(200); b.J(0x7E, "b2"); b.E(0xB8); b.D(200);
         b.L("b2");
-        b.E(0x50, 0xDB, 0x04, 0x24, 0xD8, 0x35); b.D(k200); b.E(0xD9, 0x5E, site.Interp, 0x58);   // [interp] = t / 200
-        b.L("done");
-        b.E(0x58, 0x8B, 0x0D); b.D(exitGlobal); b.E(0xC3);
-        Write(proc, stubB, b.Done(0x100));
+        b.E(0x50, 0xDB, 0x04, 0x24, 0xD8, 0x35); b.D(k200); b.E(0xD9, 0x5E, site.Interp, 0x58);   // [interp] = eax / 200
+        b.E(0x5A, 0x58, 0x8B, 0x0D); b.D(exitGlobal); b.E(0xC3);        Write(proc, stubB, b.Done(0x100));
 
         foreach (var s in new[] { Tuple.Create(site.Advance, stubA), Tuple.Create(site.Exit, stubB) })
         {
