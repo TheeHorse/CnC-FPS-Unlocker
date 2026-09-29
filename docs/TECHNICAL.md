@@ -80,6 +80,10 @@ The per-frame engine update (`0x62B920`) is hooked at two spots. When frames per
 
 The frame limiter also truncated its per-frame budget to whole milliseconds (`trunc(66.67 / R)`): 8 ms at 120 fps is really 125 fps, about 4% fast (same at 60 and 240; 90 and stock 30 are about 1% fast). It now carries the dropped fraction into the next frame (8, 8, 9, ...). The same fix is applied to Tiberium Wars and Kane's Wrath, where the limiter calls `_ftol` instead (that block was found by CNCStuff/cnc3_fps_patch).
 
+## Camera scrolling (RA3)
+
+Edge scrolling, arrow keys and right-drag scrolling each add a step every drawn frame, so at 120 fps the camera scrolled four times as fast. All of them end in the tactical view's `scrollBy(Coord2D*)` (vtable slot `0xC155B8` in 1.13, found by a byte pattern of the function and then its single vtable reference). That slot now points to a small wrapper that multiplies the delta by `30 / fps` and jumps to the original, so the scroll amount the view stores stays consistent too. Same idea as CNCStuff/cnc3_fps_patch's C&C3 camera fix.
+
 ## Known leftovers
 
 - Particles simulate at 30 Hz (like stock), so smoke motion is a little less smooth than units. Try `--pfx off` if you want to experiment.

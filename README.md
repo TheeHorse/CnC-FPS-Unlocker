@@ -28,7 +28,6 @@ Since v1.5 game speed is exact at any setting. Before that, RA3 ran about 33% fa
 
 ## Known issues
 
-- Camera scrolling is more sensitive at higher fps ([#2](../../issues/2))
 - Some effects play too fast (e.g. RA3 power plant fog), and the TW/KW Ion Cannon hit effect looks off ([#4](../../issues/4), [#5](../../issues/5))
 
 For what it's worth, the paid SageMetaTool has these too. They're next on my list.

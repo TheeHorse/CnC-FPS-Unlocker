@@ -101,6 +101,8 @@ static class Program
                 string.Join(", ", cs.Select(s => "0x" + s.ToString("X"))), ps, pm);
             report += string.Format("model transition step operand @0x{0:X}\n", FindModelTransitionStep(c));
             report += string.Format("structure build-up block @0x{0:X}\n", FindUnpackProgress(c));
+            uint sbf, sbs = FindScrollBySlot(c, out sbf);
+            report += string.Format("camera scrollBy @0x{0:X} (vtable slot 0x{1:X})\n", sbf, sbs);
             uint sa, se; bool sf = FindScheduler(c, out sa, out se);
             report += string.Format("tick scheduler: {0}\n", sf ? string.Format("advance @0x{0:X}, exit @0x{1:X}", sa, se) : "not found");
             bool lr; uint ls = FindLimiterRounding(c, out lr);
@@ -159,6 +161,7 @@ static class Program
         uint unpack = FindUnpackProgress(img);
         bool limiterRA3;
         uint limiter = FindLimiterRounding(img, out limiterRA3);
+        uint scrollFunc, scrollSlot = FindScrollBySlot(img, out scrollFunc);
         uint schedAdvance, schedExit;
         bool sched = FindScheduler(img, out schedAdvance, out schedExit);
 
@@ -175,6 +178,7 @@ static class Program
             if (mem == IntPtr.Zero) throw new Exception("VirtualAllocEx failed.");
             Write(pi.hProcess, (uint)mem, BitConverter.GetBytes(fps));
             Redirect(pi.hProcess, sites, (uint)mem);
+            if (scrollSlot != 0 && fps > 30) PatchScrollBy(pi.hProcess, scrollSlot, scrollFunc, fps, (uint)mem + 0x4F0, (uint)mem + 0x4F8, (uint)mem + 0x3C0);   // camera scroll speed
             if (sched) PatchScheduler(pi.hProcess, img, schedAdvance, schedExit, (uint)mem, (uint)mem);   // 15 ticks/s above 90 fps
             if (limiter != 0) PatchLimiterRounding(pi.hProcess, limiter, limiterRA3, (uint)mem + 0x28, (uint)mem + 0x2C, (uint)mem + 0x280);   // exact frame pacing
             if (unpack != 0) PatchUnpack(pi.hProcess, img, unpack, (uint)mem + 0x200);   // Soviet/Empire build-up clock
@@ -1041,6 +1045,43 @@ static class Program
             throw new Exception("VirtualProtectEx failed.");
         Write(proc, site, p.ToArray());
         VirtualProtectEx(proc, (IntPtr)site, (UIntPtr)p.Count, old, out old);
+    }
+
+    // Camera scrolling (edge, arrow keys, right-drag) adds a per-frame step, so at 120 fps it
+    // scrolled 4x as fast. Every input path ends in the tactical view's scrollBy(Coord2D*), so its
+    // vtable slot is pointed at a wrapper that scales the delta by 30/fps. (Same approach as
+    // CNCStuff/cnc3_fps_patch uses for C&C3.)
+    const string ScrollByPattern = "A1 ?? ?? ?? ?? 83 EC 60 80 B8 BC 00 00 00 00 56 8B F1 74 06 80 7E 48 00 75 09 80 BE 35 27 00 00 00 74 09 33 C0 5E 83 C4 60 C2 04 00";
+
+    // Returns the vtable slot holding scrollBy (0 if not found or ambiguous).
+    static uint FindScrollBySlot(byte[] img, out uint func)
+    {
+        func = FindUnique(img, ScrollByPattern);
+        if (func == 0) return 0;
+        uint slot = 0;
+        for (int o = TextEnd(img) & ~3; o + 4 <= img.Length; o += 4)
+            if (BitConverter.ToUInt32(img, o) == func) { if (slot != 0) return 0; slot = ImageBase + (uint)o; }
+        return slot;
+    }
+
+    static void PatchScrollBy(IntPtr proc, uint slot, uint func, int fps, uint scaleVa, uint tmpVa, uint stubVa)
+    {
+        Func<uint, byte[]> u = BitConverter.GetBytes;
+        Write(proc, scaleVa, BitConverter.GetBytes(30f / fps));
+        var s = new List<byte> { 0x8B, 0x44, 0x24, 0x04, 0xF3, 0x0F, 0x10, 0x00 };   // mov eax,[esp+4] / movss xmm0,[eax]
+        s.AddRange(new byte[] { 0xF3, 0x0F, 0x59, 0x05 }); s.AddRange(u(scaleVa));    // mulss xmm0,[scale]
+        s.AddRange(new byte[] { 0xF3, 0x0F, 0x11, 0x05 }); s.AddRange(u(tmpVa));      // movss [tmp],xmm0
+        s.AddRange(new byte[] { 0xF3, 0x0F, 0x10, 0x40, 0x04 });                      // movss xmm0,[eax+4]
+        s.AddRange(new byte[] { 0xF3, 0x0F, 0x59, 0x05 }); s.AddRange(u(scaleVa));    // mulss xmm0,[scale]
+        s.AddRange(new byte[] { 0xF3, 0x0F, 0x11, 0x05 }); s.AddRange(u(tmpVa + 4));  // movss [tmp+4],xmm0
+        s.AddRange(new byte[] { 0xC7, 0x44, 0x24, 0x04 }); s.AddRange(u(tmpVa));      // mov [esp+4],tmp  (scaled copy)
+        s.Add(0xE9); s.AddRange(u(func - (stubVa + (uint)s.Count + 4)));              // jmp scrollBy
+        Write(proc, stubVa, s.ToArray());
+        uint old;
+        if (!VirtualProtectEx(proc, (IntPtr)slot, (UIntPtr)4, PAGE_EXECUTE_READWRITE, out old))
+            throw new Exception("VirtualProtectEx failed.");
+        Write(proc, slot, u(stubVa));
+        VirtualProtectEx(proc, (IntPtr)slot, (UIntPtr)4, old, out old);
     }
 
     // RA3 splits each 15 Hz logic tick into 6 phases. Above 90 fps (more than 6 frames per tick)
