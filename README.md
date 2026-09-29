@@ -18,7 +18,9 @@ To uninstall, clear the Launch Options box in Steam.
 
 Needs the **Steam** versions (current updates: RA3 1.13, Tiberium Wars 1.10, Kane's Wrath 1.3).
 
-### Drop-in version (no installer, no exe)
+### Drop-in version (no installer, no exe) - testing
+
+Still being tested on non-Steam copies, so treat it as a beta until it's verified. If something's off, please open an issue.
 
 For non-Steam copies, or if you'd rather just copy files: download `CnC-FPS-Unlocker-DropIn.zip` from [Releases](../../releases) and copy the three files for your game next to the game's real executable:
 
