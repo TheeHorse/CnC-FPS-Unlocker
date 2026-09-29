@@ -1,16 +1,10 @@
-// C&C FPS Unlocker (RA3 High FPS) - by TheeHorse
-// Copyright (C) 2026 TheeHorse. Licensed under the GNU General Public License v3 or later;
-// see LICENSE. https://github.com/TheeHorse/CnC-FPS-Unlocker
+// C&C FPS Unlocker - TheeHorse 2026
+// GPL v3 or later, see LICENSE. https://github.com/TheeHorse/CnC-FPS-Unlocker
 //
-// Runs Red Alert 3 above 30 fps without touching any game files.
-// It starts the normal game paused, changes the frame-pacing value in memory,
-// then lets it run. Game logic stays at 15 ticks/sec so game speed is normal,
-// and since the exe on disk is stock, Tacitus / C&C:Online are fine with it.
-//
-// Double-click it to open the setup window. Steam runs it with the game's
-// command line (launch option: "...\RA3HighFps.exe" %command%) and it just plays.
-//
-// Extra options (put them before %command%): --fps N, --pfx off, --check <game exe>
+// starts the game suspended, patches it in memory, resumes. nothing on disk changes
+// so tacitus / cnc online don't care.
+// no args = setup window. steam launch option: "...\RA3HighFps.exe" %command%
+// options go before %command%: --fps N, --pfx off, --check <exe>
 using System;
 using System.Collections.Generic;
 using System.Diagnostics;
@@ -33,15 +27,13 @@ static class Program
     {
         try
         {
-            // Double-clicked with no arguments: a copy sitting in a game folder next to its
-            // RA3HighFps.ini (portable use, non-Steam) starts the game; anywhere else it opens
-            // the setup window. --setup always opens the setup.
+            // sitting in a game folder with an ini = just play. otherwise setup
             string here = AppDomain.CurrentDomain.BaseDirectory;
             bool portable = argv.Length == 0 && IsGameFolder(here) && File.Exists(Path.Combine(here, "RA3HighFps.ini"));
             if (portable) return Run(argv);
             if (argv.Length == 0 || (argv.Length == 1 && argv[0] == "--setup"))
             {
-                SetProcessDPIAware();  // crisp text on scaled displays
+                SetProcessDPIAware();
                 Application.EnableVisualStyles();
                 Application.Run(new SetupForm());
                 return 0;
@@ -57,18 +49,15 @@ static class Program
 
     static int Run(string[] argv)
     {
-        // RA3HighFps.ini next to the exe; --fps overrides it
         int fps = ReadIniFps(Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "RA3HighFps.ini"), 120);
-        // Particles simulate at their native 30 Hz, like the stock game.
-        bool throttlePfx = true;
-        // Experimental: also redirect the other fps reads (animation timing). ini: extra=all
+        bool throttlePfx = true;   // particles stay at 30hz like stock
+        // experimental stuff, off by default (extra=all, ticks=on)
         string extra = ReadIni(Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "RA3HighFps.ini"), "extra");
-        // Experimental: also update cached "frames per logic tick" copies. ini: ticks=on
         bool ticks = ReadIni(Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "RA3HighFps.ini"), "ticks") == "on";
-        bool menu = ReadIni(Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "RA3HighFps.ini"), "menu") == "on";   // mod / version picker on launch
-        float zoom; if (!float.TryParse(ReadIni(Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "RA3HighFps.ini"), "zoom"), System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out zoom) || zoom < 1f || zoom > 3f) zoom = 1f;   // extra: camera zoom-out, skirmish/campaign only
+        bool menu = ReadIni(Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "RA3HighFps.ini"), "menu") == "on";
+        float zoom; if (!float.TryParse(ReadIni(Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "RA3HighFps.ini"), "zoom"), System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out zoom) || zoom < 1f || zoom > 3f) zoom = 1f;
         string check = null, game = null, lang = null;
-        int runver = -1;   // -runver 1.12 (the stock launcher option): run that game version instead of the newest
+        int runver = -1;   // -runver 1.12 etc
         var pass = new List<string>();
         for (int i = 0; i < argv.Length; i++)
         {
@@ -78,28 +67,25 @@ static class Program
             else if (argv[i] == "--extra" && i + 1 < argv.Length) extra = argv[++i];
             else if (argv[i] == "--ticks" && i + 1 < argv.Length) ticks = argv[++i] == "on";
             else if (argv[i] == "--game" && i + 1 < argv.Length) game = argv[++i].Trim('"');
-            else if (argv[i] == "--lang" && i + 1 < argv.Length) lang = argv[++i].ToLowerInvariant();   // e.g. --lang german
-            // The stock launcher's own options: -runver picks the SkuDef version; -ui (its launcher window) has no
-            // equivalent here, so it's dropped rather than passed to the game.
+            else if (argv[i] == "--lang" && i + 1 < argv.Length) lang = argv[++i].ToLowerInvariant();
+            // stock launcher flags. -ui is its launcher window, just drop it
             else if (argv[i].Equals("-runver", StringComparison.OrdinalIgnoreCase) && i + 1 < argv.Length) runver = int.Parse(argv[++i].Split('.').Last());
             else if (argv[i].Equals("-ui", StringComparison.OrdinalIgnoreCase)) continue;
-            else if (argv[i] == "--play") continue;   // shortcut to the installed copy: just launch this folder's game
+            else if (argv[i] == "--play") continue;
             else if (argv[i] == "--menu") menu = true;
-            // apitrace's d3d9.dll wrapper (when present in the exe folder) writes its trace here.
-            else if (argv[i] == "--trace" && i + 1 < argv.Length) Environment.SetEnvironmentVariable("TRACE_FILE", argv[++i]);
-            // Steam runs us as `RA3HighFps.exe %command%`, so the first thing after our own
-            // options is the game's launcher (RA3.exe, CNC3.exe, ...). Its folder is the game.
+            else if (argv[i] == "--trace" && i + 1 < argv.Length) Environment.SetEnvironmentVariable("TRACE_FILE", argv[++i]);   // for apitrace
+            // first exe in %command% is the game launcher (RA3.exe / CNC3.exe)
             else if (game == null && argv[i].EndsWith(".exe", StringComparison.OrdinalIgnoreCase) && File.Exists(argv[i]))
                 game = Path.GetDirectoryName(Path.GetFullPath(argv[i]));
             else pass.Add(argv[i].Contains(" ") ? "\"" + argv[i] + "\"" : argv[i]);
         }
-        // Logic runs at 15 ticks/s, so each tick must span a whole number of frames.
+        // logic is 15 ticks/s so fps has to be a multiple of 15
         if (fps < 30 || fps > 240 || fps % 15 != 0)
             throw new Exception("fps must be a multiple of 15 between 30 and 240 (e.g. 60, 90, 120, 135, 165, 240).");
 
         if (check != null)
         {
-            // Dry run against a given game executable: report what would be patched.
+            // dry run, dumps what it would patch
             byte[] c = File.ReadAllBytes(check);
             uint cr = FindRenderFps(c);
             var cs = FindPacingSites(c, cr, cr - 4);
@@ -128,7 +114,6 @@ static class Program
             return 0;
         }
 
-        // Double-clicked copy that already lives in a game folder: that's the game.
         if (game == null && IsGameFolder(AppDomain.CurrentDomain.BaseDirectory)) game = AppDomain.CurrentDomain.BaseDirectory;
         if (game == null) throw new Exception("Run this through Steam (launch option) or from the setup window.");
         if (menu)
@@ -141,8 +126,7 @@ static class Program
                 if (m.ModConfig != null) { pass.Add("-modConfig"); pass.Add("\"" + m.ModConfig + "\""); }
             }
         }
-        // A mod's skudef says which game version it's built for ("mod-game 1.12"); the stock
-        // launcher switches to that version, so do the same unless -runver was given.
+        // mods say their version in the skudef ("mod-game 1.12"), use it like the stock launcher does
         int mi = pass.FindIndex(a => a.Equals("-modConfig", StringComparison.OrdinalIgnoreCase));
         if (runver < 0 && mi >= 0 && mi + 1 < pass.Count)
         {
@@ -154,9 +138,7 @@ static class Program
                     if (mg.Success) { runver = int.Parse(mg.Groups[1].Value); break; }
                 }
         }
-        // Logic advances one tick every fps/15 drawn frames, so a target the screen can't show
-        // (vsync caps drawing at the refresh rate) runs the game in slow motion. Cap it at the
-        // refresh rate, rounded down to a multiple of 15 (240 on a 120 Hz screen -> 120, 144 Hz -> 135).
+        // vsync caps us at the refresh rate anyway, so don't go over it (144hz -> 135)
         int hz = MonitorHz();
         if (hz >= 30 && fps > hz / 15 * 15) fps = Math.Max(30, hz / 15 * 15);
         string sku = LatestSkuDef(game, lang, runver);
@@ -181,17 +163,15 @@ static class Program
         }
         ResumeThread(pi.hThread);
         CloseHandle(pi.hThread);
-        // Once the game (and Tacitus) are fully up, log whether the patch survived.
         if (WaitForSingleObject(pi.hProcess, 45000) != 0)
             Diagnose(pi.hProcess, img, sites, fps);
-        // Stay alive until the game exits so Steam keeps showing it as running.
+        // wait for the game so steam still shows it running
         WaitForSingleObject(pi.hProcess, 0xFFFFFFFF);
         CloseHandle(pi.hProcess);
         return 0;
     }
 
-    // Drop-in DLL mode: the proxy d3d9.dll / dinput8.dll loads this assembly inside the game
-    // process just before the game's own startup code runs and calls DllEntry.Run (see dll/proxy.c).
+    // drop-in dll version, called from inside the game (dll/proxy.c)
     internal static int InProcess(string dir)
     {
         string ini = Path.Combine(dir, "RA3HighFps.ini");
@@ -204,7 +184,7 @@ static class Program
             if (hz >= 30 && fps > hz / 15 * 15) fps = Math.Max(30, hz / 15 * 15);
             byte[] img = File.ReadAllBytes(Process.GetCurrentProcess().MainModule.FileName);
             IntPtr self = Process.GetCurrentProcess().Handle;
-            // Started through the Steam launch option as well? Then the launcher has patched it already.
+            // launcher already got it (steam launch option too)
             uint render = FindRenderFps(img);
             List<uint> pacing = FindPacingSites(img, render, render - 4);
             if (pacing.Count > 0)
@@ -224,9 +204,7 @@ static class Program
         }
     }
 
-    // Finds every patch site in the game image and applies the patches to proc (the game, started
-    // suspended by the launcher, or the current process when running as the drop-in DLL).
-    // Returns the redirected pacing sites (for the diagnostics log).
+    // proc = suspended game (launcher) or ourselves (dll)
     static List<uint> ApplyPatches(IntPtr proc, byte[] img, int fps, float zoom, bool throttlePfx, string extra, bool ticks)
     {
         uint render = FindRenderFps(img);
@@ -246,30 +224,28 @@ static class Program
         SchedSite schedSite = FindScheduler(img);
         bool sched = schedSite != null;
 
-        // Layout: +0 render fps, +8 particle accumulator, +40h stub code.
+        // +0 fps, +8 particle accum, +40 stubs
         IntPtr mem = VirtualAllocEx(proc, IntPtr.Zero, (UIntPtr)4096, MEM_COMMIT | MEM_RESERVE, PAGE_EXECUTE_READWRITE);
         if (mem == IntPtr.Zero) throw new Exception("VirtualAllocEx failed.");
         Write(proc, (uint)mem, BitConverter.GetBytes(fps));
         if (sched)
         {
-            // With the clock scheduler in charge at every frame rate, the phase dispatcher and the
-            // tick-boundary check must always work one phase per call (their fps/15 >= 6 branch),
-            // so those two sites read max(fps, 90) instead of the fps.
+            // scheduler does the timing now, these two need the one-phase-per-call path (fps/15 >= 6)
             List<uint> ratio = sites.Where(s => IsPhaseRatioSite(img, s)).ToList();
             Write(proc, (uint)mem + 0x90, BitConverter.GetBytes(Math.Max(fps, 90)));
             Redirect(proc, ratio, (uint)mem + 0x90);
             Redirect(proc, sites.Except(ratio).ToList(), (uint)mem);
         }
         else Redirect(proc, sites, (uint)mem);
-        if (zoom > 1f && zoomSite != 0) PatchZoom(proc, zoomSite, netObject, zoom, (uint)mem + 0x98, (uint)mem + 0x4A0);   // extra: camera zoom-out (offline)
-        if (fades.Count > 0) PatchFadeFrameReads(proc, img, fades, (uint)mem, (uint)mem + 0x440);   // drawable fade timers
-        if (scrollSlot != 0 && fps > 30) PatchScrollBy(proc, scrollSlot, scrollFunc, fps, (uint)mem + 0x4F0, (uint)mem + 0x4F8, (uint)mem + 0x3C0);   // camera scroll speed
-        if (interpWindow.Count > 0) PatchInterpWindow(proc, interpWindow, fps);   // drawables keep interpolating for the whole tick
-        if (sched) PatchScheduler(proc, img, schedSite, (uint)mem, (uint)mem);   // 15 ticks/s at any fps above 90
-        if (limiter != 0) PatchLimiterRounding(proc, limiter, limiterRA3, (uint)mem + 0x28, (uint)mem + 0x2C, (uint)mem + 0x280);   // exact frame pacing
-        if (unpack != 0) PatchUnpack(proc, img, unpack, (uint)mem + 0x200, sched ? (uint)mem + 0x3C : 0, (uint)mem + 0x4E0);   // Soviet/Empire build-up clock
-        if (anim2d.Count > 0) PatchAnim2D(proc, img, anim2d, (uint)mem, (uint)mem + 0x100);   // 30 Hz sprite-animation clock
-        if (modelStep != 0)   // model transitions: 1/fps per drawn frame instead of 1/30
+        if (zoom > 1f && zoomSite != 0) PatchZoom(proc, zoomSite, netObject, zoom, (uint)mem + 0x98, (uint)mem + 0x4A0);
+        if (fades.Count > 0) PatchFadeFrameReads(proc, img, fades, (uint)mem, (uint)mem + 0x440);
+        if (scrollSlot != 0 && fps > 30) PatchScrollBy(proc, scrollSlot, scrollFunc, fps, (uint)mem + 0x4F0, (uint)mem + 0x4F8, (uint)mem + 0x3C0);
+        if (interpWindow.Count > 0) PatchInterpWindow(proc, interpWindow, fps);
+        if (sched) PatchScheduler(proc, img, schedSite, (uint)mem, (uint)mem);
+        if (limiter != 0) PatchLimiterRounding(proc, limiter, limiterRA3, (uint)mem + 0x28, (uint)mem + 0x2C, (uint)mem + 0x280);
+        if (unpack != 0) PatchUnpack(proc, img, unpack, (uint)mem + 0x200, sched ? (uint)mem + 0x3C : 0, (uint)mem + 0x4E0);   // construction
+        if (anim2d.Count > 0) PatchAnim2D(proc, img, anim2d, (uint)mem, (uint)mem + 0x100);
+        if (modelStep != 0)   // 1/fps instead of 1/30
         {
             Write(proc, (uint)mem + 0x10, BitConverter.GetBytes(1f / fps));
             Redirect(proc, new List<uint> { modelStep }, (uint)mem + 0x10);
@@ -280,8 +256,7 @@ static class Program
         return sites;
     }
 
-    // Writes %TEMP%\RA3HighFps.log: each patched site's live bytes vs. the file,
-    // plus the frame limiter's live code and frame_ms value.
+    // %TEMP%\RA3HighFps.log
     static void Diagnose(IntPtr proc, byte[] img, List<uint> sites, int fps)
     {
         var log = new StringBuilder();
@@ -313,7 +288,6 @@ static class Program
         return string.Join(" ", b.Skip(off).Take(n).Select(x => x.ToString("X2")));
     }
 
-    // Point each 4-byte absolute operand at `target`.
     static void Redirect(IntPtr proc, List<uint> operands, uint target)
     {
         byte[] addr = BitConverter.GetBytes(target);
@@ -334,11 +308,8 @@ static class Program
             throw new Exception(string.Format("WriteProcessMemory at 0x{0:X} failed.", va));
     }
 
-    // ---- setup window ----------------------------------------------------------
+    // ---- setup window ----
 
-    // Little window you get when you double-click the exe. Lists every supported game it
-    // finds, installs into the ticked ones, then shows the Steam launch option for each.
-    // Optional extras that aren't about frame rate. Off unless ticked here.
     class ExtrasForm : Form
     {
         readonly CheckBox zoomBox = new CheckBox { Text = "Let the camera zoom out further", AutoSize = true };
@@ -384,7 +355,7 @@ static class Program
         readonly ComboBox fpsBox = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList };
         readonly CheckedListBox gameList = new CheckedListBox { CheckOnClick = true, IntegralHeight = false, BorderStyle = BorderStyle.FixedSingle };
         readonly CheckBox menuBox = new CheckBox { Text = "Show a mod && version picker when the game starts", AutoSize = true };
-        float zoomValue = 1f;   // extras: camera zoom-out factor (1 = off)
+        float zoomValue = 1f;
         List<Tuple<string, string>> games;
 
         public SetupForm()
@@ -398,7 +369,6 @@ static class Program
             ShowIcon = false;
             StartPosition = FormStartPosition.CenterScreen;
 
-            // Header strip
             var banner = new PictureBox { Bounds = new Rectangle(0, 0, 500, 90), SizeMode = PictureBoxSizeMode.StretchImage };
             using (var s = typeof(Program).Assembly.GetManifestResourceStream("banner.jpg"))
                 if (s != null) banner.Image = Image.FromStream(s);
@@ -425,7 +395,7 @@ static class Program
 
             int y = gameList.Bottom + 16;
             Controls.Add(new Label { Text = "Frame rate:", AutoSize = true, Location = new Point(20, y + 4) });
-            Func<int, string> fpsLabel = f => f + " fps" + (f >= 240 ? " (experimental)" : "");   // 240 is still being tested
+            Func<int, string> fpsLabel = f => f + " fps" + (f >= 240 ? " (experimental)" : "");
             for (int f = 30; f <= 240; f += 15) fpsBox.Items.Add(fpsLabel(f));
             int current = games.Select(g => ReadIniFps(IniPath(g.Item2), 0)).FirstOrDefault(v => v > 0);
             int pick = current > 0 ? current : Math.Max(30, Math.Min(240, MonitorHz() / 15 * 15));
@@ -447,7 +417,7 @@ static class Program
             Controls.Add(Line(y));
             var install = new Button { Text = "Install", Bounds = new Rectangle(324, y + 13, 75, 23), Enabled = games.Count > 0 };
             var cancel = new Button { Text = "Cancel", Bounds = new Rectangle(405, y + 13, 75, 23) };
-            cancel.Click += (s, e) => Close();   // this window isn't a dialog, so DialogResult alone does nothing
+            cancel.Click += (s, e) => Close();   // not a dialog
             install.Click += (s, e) => Install();
             Controls.AddRange(new Control[] { install, cancel });
             AcceptButton = install;
@@ -456,7 +426,6 @@ static class Program
             Shown += (s, e) => fpsBox.Focus();
         }
 
-        // Etched separator like the ones in normal Windows setup programs.
         static Label Line(int y)
         {
             return new Label { BorderStyle = BorderStyle.Fixed3D, Bounds = new Rectangle(0, y, 500, 2) };
@@ -464,10 +433,9 @@ static class Program
 
         int SelectedFps() { return int.Parse(((string)fpsBox.SelectedItem).Split(' ')[0]); }
 
-        // Copies this exe into each ticked game folder and saves the fps there.
         void Install()
         {
-            var done = new List<Tuple<string, string>>();   // (game name, launch option)
+            var done = new List<Tuple<string, string>>();   // name, launch option
             try
             {
                 foreach (int i in gameList.CheckedIndices)
@@ -495,7 +463,6 @@ static class Program
         }
     }
 
-    // Last page: one launch option per game, each with a Copy button.
     class FinishForm : Form
     {
         public FinishForm(List<Tuple<string, string>> done, int fps)
@@ -535,22 +502,20 @@ static class Program
             ClientSize = new Size(500, y + 48);
             Shown += (s, e) =>
             {
-                foreach (var tb in Controls.OfType<TextBox>()) tb.Select(0, 0);   // show the start of each line
+                foreach (var tb in Controls.OfType<TextBox>()) tb.Select(0, 0);
                 ok.Focus();
             };
         }
     }
 
-    // Shown on launch when menu=on (or --menu): pick a mod and game version, like the old
-    // -ui launcher window. Remembers the last choice in the ini.
+    // menu=on: mod/version picker, basically the old -ui launcher
     class MenuForm : Form
     {
         readonly ComboBox modBox = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList };
         readonly ComboBox verBox = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList };
-        readonly List<string> modPaths = new List<string> { null };   // index 0 = no mod
+        readonly List<string> modPaths = new List<string> { null };   // 0 = no mod
         public string ModConfig { get { return modPaths[modBox.SelectedIndex]; } }
-        // -1 = Auto: the newest version, or the one the chosen mod asks for (mod-game 1.N)
-        public int Version { get { string v = (string)verBox.SelectedItem; return v == "Auto" ? -1 : int.Parse(v.Split('.')[1]); } }
+        public int Version { get { string v = (string)verBox.SelectedItem; return v == "Auto" ? -1 : int.Parse(v.Split('.')[1]); } }   // -1 = auto
 
         public MenuForm(string game, string lang)
         {
@@ -614,7 +579,6 @@ static class Program
         }
     }
 
-    // Display name for a game folder, from the Games table.
     static string GameName(string game)
     {
         string leaf = Path.GetFileName(Path.GetFullPath(game).TrimEnd('\\'));
@@ -622,7 +586,6 @@ static class Program
         return g != null ? g[1] : leaf;
     }
 
-    // Game versions (1.N) that have a SkuDef in the chosen language, newest first.
     static List<int> SkuVersions(string game, string lang)
     {
         string newest = LatestSkuDef(game, lang);
@@ -633,8 +596,7 @@ static class Program
             .OrderByDescending(v => v).ToList();
     }
 
-    // Mods in Documents\<game's user data folder>\Mods\<Mod>\*.skudef (newest skudef per mod),
-    // which is where the stock launcher looks.
+    // Documents\<game>\Mods\<mod>\*.skudef, same place the stock launcher looks
     static List<Tuple<string, string>> FindMods(string game)
     {
         var mods = new List<Tuple<string, string>>();
@@ -651,7 +613,6 @@ static class Program
         return mods;
     }
 
-    // The game's folder name under Documents: the registry's UserDataLeafName, else the usual names.
     static List<string> UserDataFolders(string game)
     {
         var names = new List<string>();
@@ -678,7 +639,6 @@ static class Program
         return names.Distinct(StringComparer.OrdinalIgnoreCase).ToList();
     }
 
-    // Set key=value in the ini, keeping the other lines.
     static void SetIni(string ini, string key, string value)
     {
         var lines = File.Exists(ini) ? File.ReadAllLines(ini).ToList() : new List<string>();
@@ -689,7 +649,6 @@ static class Program
 
     static string IniPath(string game) { return Path.Combine(game, "RA3HighFps.ini"); }
 
-    // Current refresh rate of the main display (falls back to 60).
     static int MonitorHz()
     {
         var dm = new DEVMODE { dmSize = (short)Marshal.SizeOf(typeof(DEVMODE)) };
@@ -713,7 +672,6 @@ static class Program
     static extern bool EnumDisplaySettings(string device, int mode, ref DEVMODE dm);
     [DllImport("user32.dll")] static extern bool SetProcessDPIAware();
 
-    // `fps=N` from the given ini, or the fallback if the file/key is missing.
     static int ReadIniFps(string ini, int fallback)
     {
         string v = ReadIni(ini, "fps");
@@ -726,26 +684,24 @@ static class Program
         if (!File.Exists(ini)) return null;
         foreach (string line in File.ReadAllLines(ini))
         {
-            var m = Regex.Match(line, @"^\s*" + key + @"\s*=\s*(.*?)\s*$", RegexOptions.IgnoreCase);   // whole value: paths have spaces
+            var m = Regex.Match(line, @"^\s*" + key + @"\s*=\s*(.*?)\s*$", RegexOptions.IgnoreCase);
             if (m.Success && m.Groups[1].Value.Length > 0) return m.Groups[1].Value;
         }
         return null;
     }
 
-    // ---- locating the game -------------------------------------------------
+    // ---- finding games ----
 
-    // Steam folder name -> display name. All are SAGE games with a launcher that runs the
-    // real exe from the newest <prefix>_<lang>_1.N.SkuDef.
+    // steam folder, display name
     static readonly string[][] Games =
     {
         new[] { "Command and Conquer Red Alert 3",          "Red Alert 3" },
         new[] { "Command and Conquer 3 Tiberium Wars",      "Tiberium Wars" },
         new[] { "Command and Conquer 3 - Kane's Wrath",     "Kane's Wrath" },
-        new[] { "Command and Conquer Red Alert 3 Uprising",   "Red Alert 3 Uprising" },   // Steam folder name
+        new[] { "Command and Conquer Red Alert 3 Uprising",   "Red Alert 3 Uprising" },
         new[] { "Command and Conquer Red Alert 3 - Uprising", "Red Alert 3 Uprising" },
     };
 
-    // Installed supported games as (display name, folder).
     static List<Tuple<string, string>> FindGames()
     {
         var libs = new List<string>();
@@ -764,7 +720,7 @@ static class Program
                 if (IsGameFolder(p)) { found.Add(Tuple.Create(g[1], p)); break; }
             }
 
-        // EA app / Origin / retail installs register their folder under EA's registry keys.
+        // ea app / origin / disc
         foreach (string root in new[] { @"SOFTWARE\WOW6432Node\Electronic Arts\Electronic Arts", @"SOFTWARE\WOW6432Node\Electronic Arts",
                                         @"SOFTWARE\WOW6432Node\EA Games", @"SOFTWARE\Electronic Arts\Electronic Arts" })
         {
@@ -792,7 +748,6 @@ static class Program
 
     static bool IsSteamInstall(string dir) { return dir.IndexOf(@"\steamapps\common\", StringComparison.OrdinalIgnoreCase) >= 0; }
 
-    // Desktop shortcut that runs the unlocker in a (non-Steam) game folder with --play.
     static string MakeShortcut(string exe, string name)
     {
         string lnk = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.DesktopDirectory), name + " (FPS Unlocker).lnk");
@@ -813,9 +768,7 @@ static class Program
         catch { return false; }
     }
 
-    // The launcher runs the highest-versioned <prefix>_<lang>_1.N.SkuDef for the game's
-    // language (or 1.<runver> when -runver is given, e.g. 1.12 for mods that need it).
-    // Non-English installs ship English SkuDefs too, so the language matters.
+    // newest skudef for the game's language (non-english installs have english ones too)
     static string LatestSkuDef(string game, string lang, int runver = -1)
     {
         var skus = Directory.GetFiles(game, "*_1.*.SkuDef")
@@ -825,7 +778,7 @@ static class Program
             .ToList();
         if (skus.Count == 0) throw new Exception("No SkuDef found in " + game);
 
-        // Preference: --lang, the language Steam wrote to the registry, Windows' language, English.
+        // --lang, then registry, then windows, then english
         var wanted = new[] { lang, RegistryLanguage(game),
                              CultureInfo.CurrentUICulture.Parent.EnglishName.Split(' ')[0].ToLowerInvariant(), "english" };
         string pick = wanted.FirstOrDefault(l => l != null && skus.Any(s => s.lang == l)) ?? skus[0].lang;
@@ -839,8 +792,7 @@ static class Program
         return mine.OrderByDescending(s => s.ver).First().f;
     }
 
-    // Steam's install script writes the chosen language (e.g. "German", "English (US)") under the
-    // game's Electronic Arts registry key. Find the key whose install path is this folder.
+    // steam writes the language ("German", "English (US)") to the EA key for this folder
     static string RegistryLanguage(string game)
     {
         string target = Path.GetFullPath(game).TrimEnd('\\');
@@ -874,8 +826,8 @@ static class Program
         throw new Exception("SkuDef has no set-exe line.");
     }
 
-    // ---- signatures ----------------------------------------------------------
-    // -1 is a wildcard; R/L are the 4-byte render_fps / logic_fps addresses.
+    // ---- signatures ----
+    // -1 = wildcard, R/L = render_fps / logic_fps addresses
 
     // mov eax,1000 / xor edx,edx / div [render_fps] / mov [frame_ms],eax
     static readonly int[] FrameMsSig = { 0xB8, 0xE8, 0x03, 0x00, 0x00, 0x33, 0xD2, 0xF7, 0x35, -1, -1, -1, -1, 0xA3 };
@@ -887,9 +839,8 @@ static class Program
         return BitConverter.ToUInt32(img, hits[0] + 9);
     }
 
-    // Frame-pacing reads of render_fps, found by what the code does so the same rules
-    // work for RA3 and C&C3. Never includes the fps*0.001 "framesPerMs" initializer:
-    // the particle code uses that as a fixed 30ths-of-a-second clock.
+    // reads of render_fps that do frame pacing. same rules for ra3 and cnc3.
+    // leaves the fps*0.001 framesPerMs init alone, particles use it as a 30hz clock
     static List<uint> FindPacingSites(byte[] img, uint r, uint l)
     {
         int end = TextEnd(img);
@@ -903,11 +854,11 @@ static class Program
             if (!at(i, R)) continue;
             uint va = ImageBase + (uint)i;
 
-            // Frame limiter: mov eax,1000 / xor edx,edx / div [fps]
+            // limiter: mov eax,1000 / xor edx,edx / div [fps]
             if (img[i - 9] == 0xB8 && img[i - 8] == 0xE8 && img[i - 7] == 0x03 && img[i - 2] == 0xF7 && img[i - 1] == 0x35)
             { sites.Add(va); continue; }
 
-            // Frames per logic tick: mov eax,[fps] / xor edx,edx / div [logic], then compared with 6
+            // frames per tick: mov eax,[fps] / xor edx,edx / div [logic], then cmp with 6
             if (img[i - 1] == 0xA1 && img[i + 4] == 0x33 && img[i + 5] == 0xD2 && img[i + 6] == 0xF7 && img[i + 7] == 0x35 && at(i + 8, L))
             {
                 bool cmp6 = false, push6 = false;
@@ -930,8 +881,8 @@ static class Program
                 continue;
             }
 
-            // Static initializers: push ecx / mov eax,[fps] / fild [fps] / (unsigned fixup) / op
-            // Redirect 1000/fps (fdivr) and fps (fstp); keep anything multiplied (time units).
+            // static init: push ecx / mov eax,[fps] / fild [fps] / ... / op
+            // take 1000/fps (fdivr) and fps (fstp), skip fmul ones (time units)
             if (img[i - 2] == 0x51 && img[i - 1] == 0xA1 && img[i + 4] == 0xDB && img[i + 5] == 0x05 && at(i + 6, R)
                 && img[i + 10] == 0x85 && img[i + 12] == 0x7D && img[i + 14] == 0xD8 && img[i + 15] == 0x05)
             {
@@ -940,7 +891,7 @@ static class Program
                 continue;
             }
 
-            // Object field set to the frame rate in a constructor: mov eax,[fps] / mov [esi+x],eax
+            // ctor: mov eax,[fps] / mov [esi+x],eax
             if (img[i - 1] == 0xA1 && img[i + 4] == 0x89 && img[i + 5] == 0x86 && img[i + 8] == 0 && img[i + 9] == 0)
             { objRate = i; objHits++; }
         }
@@ -954,9 +905,8 @@ static class Program
         return sites;
     }
 
-    // Every other plain read of render_fps (mostly `fild [fps]` float conversions in visual code),
-    // minus anything that must stay 30: logic-rate derivations (fps/2, fps/logic), the particle
-    // clock's "now" (`call getTime / imul eax,[fps]`) and time-unit initializers (fild then fmul).
+    // all the other render_fps reads (mostly fild in visual code), minus stuff that has to stay 30:
+    // fps/2, fps/logic, particle clock (call getTime / imul [fps]), time unit inits
     static List<uint> FindExtraSites(byte[] img, uint r, uint l, List<uint> pacing)
     {
         int end = TextEnd(img);
@@ -968,7 +918,7 @@ static class Program
         {
             if (!at(i, R)) continue;
             uint va = ImageBase + (uint)i;
-            if (pacing.Contains(va) || pacing.Contains(va - 6) || pacing.Contains(va + 6)) continue;   // incl. the sign-test read next to a redirected fild
+            if (pacing.Contains(va) || pacing.Contains(va - 6) || pacing.Contains(va + 6)) continue;
             string p2 = img[i - 2].ToString("X2") + img[i - 1].ToString("X2");
             string p3 = img[i - 3].ToString("X2") + p2;
             if (!(img[i - 1] == 0xA1 || twoByte.Contains(p2) || twoByte.Contains(p3))) continue;
@@ -978,7 +928,7 @@ static class Program
                 if (img[k] == 0xF7 && (img[k + 1] == 0x35 || img[k + 1] == 0x3D) && at(k + 2, L)) divL = true;
             if (divL) continue;                                                                    // fps / logic
             if (p3.StartsWith("0FAF") && img[i - 8] == 0xE8) continue;                             // call getTime / imul [fps]
-            // Static initializer `push ecx / mov eax,[fps] / fild [fps] / ... / fmul`: a time unit.
+            // time unit init (... fmul)
             int s = img[i - 1] == 0xA1 ? i : (p2 == "DB05" ? i - 6 : -1);
             if (s > 0 && img[s - 2] == 0x51 && img[s - 1] == 0xA1 && img[s + 4] == 0xDB && img[s + 14] == 0xD8
                 && img[s + 20] == 0xD8 && img[s + 21] == 0x0D) continue;
@@ -987,10 +937,7 @@ static class Program
         return list;
     }
 
-    // `mov eax,[fps] / xor edx,edx / div [logic]` whose result is stored into an object
-    // (`mov [reg+x],eax` shortly after): cached "frames per logic tick" copies. If these keep
-    // the stock value (2) while the main loop runs 8 frames per tick, anything paced by the
-    // cached copy (e.g. construction progress) runs fps/30 times too fast.
+    // cached copies of frames-per-tick (fps/logic stored into an object). experimental, ticks=on
     static List<uint> FindTickStores(byte[] img, uint r, uint l)
     {
         int end = TextEnd(img);
@@ -1007,7 +954,7 @@ static class Program
         return list;
     }
 
-    // "all", "none", or comma-separated indices/ranges into the list, e.g. "0-20,25".
+    // "all", "none" or "0-20,25"
     static List<uint> SelectSites(List<uint> all, string spec)
     {
         if (spec == null || spec == "none") return new List<uint>();
@@ -1022,12 +969,9 @@ static class Program
         return pick;
     }
 
-    // Scripted model transitions (e.g. Soviet/Empire building unfold / build-up) advance a
-    // 0..1 timer by the shared 1/30 s constant once per drawn frame:
-    //     call [GameClient]->getFrame / movss xmm0,[obj+x] / addss xmm0,[1/30f]
-    // At 120 fps that plays them 4x too fast. Returns the VA of the addss operand (only that
-    // read moves to 1/fps; the shared constant has other users, e.g. pathfinding), or 0.
-    // Credit: identified in CNCStuff/cnc3_fps_patch ("scripted-model transition step").
+    // model transitions add 1/30 per drawn frame (addss xmm0,[1/30f]), 4x too fast at 120.
+    // only this read gets moved, the constant is shared (pathfinding uses it too)
+    // found by CNCStuff/cnc3_fps_patch
     static uint FindModelTransitionStep(byte[] img)
     {
         int end = TextEnd(img);
@@ -1045,19 +989,15 @@ static class Program
         return count == 1 ? hit : 0;
     }
 
-    // Anim2D (2D sprite animations, e.g. the construction progress sprites) picks the next
-    // frame when `getFrame() - [anim+8] >= [anim+18h]`, i.e. it counts drawn frames and its
-    // intervals are authored for 30 fps. All reads of getFrame() that feed [anim+8] must use
-    // the same clock, so every `mov reg,[reg+74h] / call reg` followed by `mov [esi+8],eax`
-    // or `sub eax,[esi+8] / cmp eax,[esi+18h]` is switched to a 30 Hz frame number.
-    // Credit: identified in CNCStuff/cnc3_fps_patch (Anim2D frame reads).
+    // 2d sprite anims count drawn frames (made for 30fps), give them a 30hz frame number instead.
+    // found by CNCStuff/cnc3_fps_patch
     static List<uint> FindAnim2DFrameReads(byte[] img)
     {
         int end = TextEnd(img);
         var list = new List<uint>();
         for (int i = 0x1000; i < end - 16; i++)
         {
-            // 8B 4x 74 = mov r32,[r32+74h] ; [83 C4 xx = add esp,imm8] ; FF Dx = call r32 (same register)
+            // mov r,[r+74h] / (add esp,x) / call r
             if (img[i] != 0x8B || (img[i + 1] & 0xC0) != 0x40 || img[i + 2] != 0x74) continue;
             int dst = (img[i + 1] >> 3) & 7;
             int c = i + 3;
@@ -1071,7 +1011,7 @@ static class Program
         return list;
     }
 
-    // Stub: eax = ceil(GameClient->getFrame() * 30 / fps). ecx is the GameClient, as at the call site.
+    // eax = ceil(getFrame() * 30 / fps)
     static void PatchAnim2D(IntPtr proc, byte[] img, List<uint> sites, uint fpsVa, uint stubVa)
     {
         var s = new List<byte>();
@@ -1086,8 +1026,7 @@ static class Program
         Write(proc, stubVa, s.ToArray());
         foreach (uint site in sites)
         {
-            // `mov r,[r+74h] / call r` (5 bytes) -> `call stub`;
-            // `mov r,[r+74h] / add esp,xx / call r` (8 bytes) -> `add esp,xx / call stub`.
+            // keep the add esp if there is one
             int o = (int)(site - ImageBase);
             var code = new List<byte>();
             if (img[o + 3] == 0x83 && img[o + 4] == 0xC4) code.AddRange(new byte[] { 0x83, 0xC4, img[o + 5] });
@@ -1101,12 +1040,9 @@ static class Program
         }
     }
 
-    // The frame limiter waits trunc(66.67 ms / framesPerTick) per frame. Truncating to whole
-    // milliseconds is harmless at 30 fps (33 ms) but at 120 fps gives 8 ms = 125 fps, so the game
-    // runs about 4% fast (same at 60 and 240; 90 is close to exact). The patch keeps the dropped
-    // fraction and carries it into the next frame (8, 8, 9, ... ms), so the average is exact.
-    // RA3 truncates inline with fistp; C&C3 calls the CRT's _ftol (credit: CNCStuff/cnc3_fps_patch
-    // found the C&C3 block).
+    // limiter truncates to whole ms: 120fps -> 8ms = 125fps, ~4% fast. carry the leftover
+    // into the next frame (8,8,9..) so it averages out. ra3 = inline fistp, cnc3 = _ftol
+    // (cnc3 block found by CNCStuff/cnc3_fps_patch)
     const string LimiterPatternRA3 = "D8 3D ?? ?? ?? ?? 2B 05 ?? ?? ?? ?? A3 ?? ?? ?? ?? D9 6C 24 14 DF 7C 24 14 8B 74 24 14 3B C6";
     const string LimiterPatternCnc3 = "3B C8 76 07 C6 05 ?? ?? ?? ?? 00 80 3D ?? ?? ?? ?? 00 74 69 E8 ?? ?? ?? ?? DB 86 64 01 00 00 8B D8 D8 0D ?? ?? ?? ?? D8 3D ?? ?? ?? ?? E8";
 
@@ -1125,7 +1061,6 @@ static class Program
         return found < 0 ? 0 : ImageBase + (uint)found;
     }
 
-    // Returns the patch site; ra3Style = inline fistp (8 bytes), otherwise a 5-byte call to _ftol.
     static uint FindLimiterRounding(byte[] img, out bool ra3Style)
     {
         uint m = FindUnique(img, LimiterPatternRA3);
@@ -1138,10 +1073,10 @@ static class Program
     static void PatchLimiterRounding(IntPtr proc, uint site, bool ra3Style, uint accVa, uint tmpVa, uint stubVa)
     {
         Func<uint, byte[]> u = BitConverter.GetBytes;
-        var s = new List<byte> { 0xD8, 0x05 }; s.AddRange(u(accVa));               // fadd [acc]   (leftover from last frame)
+        var s = new List<byte> { 0xD8, 0x05 }; s.AddRange(u(accVa));               // fadd [acc]
         if (ra3Style)
         {
-            // rounding mode is already "truncate" here (the game set it for its own fistp)
+            // already in truncate mode here
             s.AddRange(new byte[] { 0xD9, 0xC0, 0xDB, 0x1D }); s.AddRange(u(tmpVa)); // fld st0 / fistp [tmp]
         }
         else
@@ -1152,14 +1087,14 @@ static class Program
             s.AddRange(new byte[] { 0xD9, 0x2C, 0x24, 0x83, 0xC4, 0x04 });          // restore mode
         }
         s.AddRange(new byte[] { 0xDA, 0x25 }); s.AddRange(u(tmpVa));               // fisub [tmp]
-        s.AddRange(new byte[] { 0xD9, 0x1D }); s.AddRange(u(accVa));               // fstp [acc]   (new leftover, 0..1 ms)
+        s.AddRange(new byte[] { 0xD9, 0x1D }); s.AddRange(u(accVa));               // fstp [acc]
         if (ra3Style) { s.AddRange(new byte[] { 0x8B, 0x35 }); s.AddRange(u(tmpVa)); }   // mov esi,[tmp]
         else { s.Add(0xA1); s.AddRange(u(tmpVa)); }                                        // mov eax,[tmp]
         s.Add(0xC3);
         Write(proc, stubVa, s.ToArray());
 
         var p = new List<byte> { 0xE8 }; p.AddRange(u(stubVa - (site + 5)));
-        if (ra3Style) p.AddRange(new byte[] { 0x90, 0x90, 0x90 });   // replaces fistp qword [esp+14h] / mov esi,[esp+14h]
+        if (ra3Style) p.AddRange(new byte[] { 0x90, 0x90, 0x90 });
         uint old;
         if (!VirtualProtectEx(proc, (IntPtr)site, (UIntPtr)p.Count, PAGE_EXECUTE_READWRITE, out old))
             throw new Exception("VirtualProtectEx failed.");
@@ -1167,10 +1102,8 @@ static class Program
         VirtualProtectEx(proc, (IntPtr)site, (UIntPtr)p.Count, old, out old);
     }
 
-    // Drawable fade in/out (dying units, stealth, some effect objects) gets its duration in 30 fps
-    // frames (ms * framesPerMs) but stamps and measures time with GameClient::getFrame(), the real
-    // drawn-frame count, so at 120 fps fades finished 4x early. All five reads of that clock (the
-    // setters that stamp [obj+338h] and the per-frame update) are switched to a 30 Hz frame number.
+    // fades (dying units, stealth etc) time themselves with drawn frames -> 4x fast at 120.
+    // same 30hz frame number trick as anim2d, 5 reads
     static readonly string[] FadeFramePatterns = {
         "8B 0D ?? ?? ?? ?? 8B 01 8B 50 74 FF D2 89 86 38 03 00 00",
         "8B 0D ?? ?? ?? ?? 8B 11 8B 42 74 FF D0 89 86 38 03 00 00",
@@ -1190,10 +1123,10 @@ static class Program
                 if (j == pat.Length) list.Add(ImageBase + (uint)i);
             }
         }
-        return list.Count == 5 ? list : new List<uint>();   // exactly the known set, or leave it alone
+        return list.Count == 5 ? list : new List<uint>();
     }
 
-    // Each site is `mov ecx,[TheGameClient] / mov r,[ecx] / mov r,[r+74h] / call r` (13 bytes).
+    // 13 bytes: mov ecx,[client] / mov r,[ecx] / mov r,[r+74h] / call r
     static void PatchFadeFrameReads(IntPtr proc, byte[] img, List<uint> sites, uint fpsVa, uint stubVa)
     {
         Func<uint, byte[]> u = BitConverter.GetBytes;
@@ -1215,19 +1148,16 @@ static class Program
         }
     }
 
-    // Camera scrolling (edge, arrow keys, right-drag) adds a per-frame step, so at 120 fps it
-    // scrolled 4x as fast. Every input path ends in the tactical view's scrollBy(Coord2D*), so its
-    // vtable slot is pointed at a wrapper that scales the delta by 30/fps. (Same approach as
-    // CNCStuff/cnc3_fps_patch uses for C&C3.)
+    // scrolling moves a fixed step per frame. everything goes through scrollBy(Coord2D*) so
+    // wrap it in the vtable and scale by 30/fps (same idea as CNCStuff/cnc3_fps_patch)
     const string ScrollByPattern = "A1 ?? ?? ?? ?? 83 EC 60 80 B8 BC 00 00 00 00 56 8B F1 74 06 80 7E 48 00 75 09 80 BE 35 27 00 00 00 74 09 33 C0 5E 83 C4 60 C2 04 00";
 
     const string ScrollByPatternCnc3 = "55 8B EC A1 ?? ?? ?? ?? 83 EC 64 80 B8 CC 00 00 00 00 53 8B D9 74 0D 80 7B 44 00 74 07 33 C0 E9";
 
-    // Returns the vtable slot holding scrollBy (0 if not found or ambiguous).
     static uint FindScrollBySlot(byte[] img, out uint func)
     {
         func = FindUnique(img, ScrollByPattern);
-        if (func == 0) func = FindUnique(img, ScrollByPatternCnc3);   // Tiberium Wars / Kane's Wrath
+        if (func == 0) func = FindUnique(img, ScrollByPatternCnc3);   // tw / kw
         if (func == 0) return 0;
         uint slot = 0;
         for (int o = TextEnd(img) & ~3; o + 4 <= img.Length; o += 4)
@@ -1245,7 +1175,7 @@ static class Program
         s.AddRange(new byte[] { 0xF3, 0x0F, 0x10, 0x40, 0x04 });                      // movss xmm0,[eax+4]
         s.AddRange(new byte[] { 0xF3, 0x0F, 0x59, 0x05 }); s.AddRange(u(scaleVa));    // mulss xmm0,[scale]
         s.AddRange(new byte[] { 0xF3, 0x0F, 0x11, 0x05 }); s.AddRange(u(tmpVa + 4));  // movss [tmp+4],xmm0
-        s.AddRange(new byte[] { 0xC7, 0x44, 0x24, 0x04 }); s.AddRange(u(tmpVa));      // mov [esp+4],tmp  (scaled copy)
+        s.AddRange(new byte[] { 0xC7, 0x44, 0x24, 0x04 }); s.AddRange(u(tmpVa));      // mov [esp+4],tmp
         s.Add(0xE9); s.AddRange(u(func - (stubVa + (uint)s.Count + 4)));              // jmp scrollBy
         Write(proc, stubVa, s.ToArray());
         uint old;
@@ -1255,10 +1185,8 @@ static class Program
         VirtualProtectEx(proc, (IntPtr)slot, (UIntPtr)4, old, out old);
     }
 
-    // Extra (off by default): camera zoom-out. The view's setZoom clamps the zoom to a max it gets
-    // from the map's camera limits (RA3: 550 by default). The call that fetches the max is wrapped
-    // so the result is multiplied by the ini's `zoom` factor, but only when there is no network
-    // object, i.e. in skirmish and campaign, never online or LAN.
+    // zoom extra: multiply the max zoom (550 default) by the ini value.
+    // only when there's no network object so never online/lan
     const string ZoomMaxPattern = "8B 96 FC 26 00 00 8B 42 04 57 8D BE FC 26 00 00 8B CF FF D0 8B 17 8B 02 51 8B CF D9 1C 24 FF D0";
     const string NetObjectPattern = "8B 35 ?? ?? ?? ?? 3B F5 0F 84 ?? ?? ?? ?? 80 3D ?? ?? ?? ?? 00 0F 85 ?? ?? ?? ?? 80 3D ?? ?? ?? ?? 00 0F 85";
 
@@ -1266,15 +1194,15 @@ static class Program
     {
         uint z = FindUnique(img, ZoomMaxPattern), n = FindUnique(img, NetObjectPattern);
         netObject = n != 0 ? BitConverter.ToUInt32(img, (int)(n + 2 - ImageBase)) : 0;
-        return z != 0 && n != 0 ? z + 0xA : 0;   // `lea edi,[esi+26FCh] / mov ecx,edi / call eax` (10 bytes)
+        return z != 0 && n != 0 ? z + 0xA : 0;
     }
 
     static void PatchZoom(IntPtr proc, uint site, uint netObject, float factor, uint factorVa, uint stubVa)
     {
         Write(proc, factorVa, BitConverter.GetBytes(factor));
         var s = new Asm(stubVa);
-        s.E(0x8D, 0xBE, 0xFC, 0x26, 0, 0, 0x8B, 0xCF, 0xFF, 0xD0);   // original: lea edi,[esi+26FCh] / mov ecx,edi / call eax  (st0 = max zoom)
-        s.E(0x83, 0x3D); s.D(netObject); s.E(0x00); s.J(0x75, "online");   // network game: leave it
+        s.E(0x8D, 0xBE, 0xFC, 0x26, 0, 0, 0x8B, 0xCF, 0xFF, 0xD0);   // original code, st0 = max zoom
+        s.E(0x83, 0x3D); s.D(netObject); s.E(0x00); s.J(0x75, "online");
         s.E(0xD8, 0x0D); s.D(factorVa);                              // fmul [factor]
         s.L("online");
         s.E(0xC3);
@@ -1287,16 +1215,12 @@ static class Program
         VirtualProtectEx(proc, (IntPtr)site, (UIntPtr)10, old, out old);
     }
 
-    // RA3 drawables only interpolate for 6 drawn frames after their last logic update
-    // (`frame - [drawable+130h] >= 6` -> skip), the most frames a tick has at 90 fps. With more
-    // frames per tick, units froze for the rest of the tick and then jumped. Both checks get
-    // fps/15 + 2 instead.
-    // Same check in every game, compiled with different registers: RA3 `sub eax,[esi+130h]`,
-    // Tiberium Wars `[ebx/esi+138h]`, Kane's Wrath `[edi]`/`[esi]` (pointing at +138h).
+    // units only interpolate for 6 frames after a logic update (enough at 90fps). above that
+    // they froze then jumped = the hitching. make it fps/15 + 2
     static readonly string[] InterpWindowPatterns = {
-        "2B 86 30 01 00 00 83 F8 06",                                            // RA3
-        "FF 50 78 2B 83 38 01 00 00 83 F8 06", "FF 50 78 2B 86 38 01 00 00 83 F8 06",   // Tiberium Wars
-        "FF 50 78 2B 07 83 F8 06", "FF 50 78 2B 06 83 F8 06" };                   // Kane's Wrath
+        "2B 86 30 01 00 00 83 F8 06",                                            // ra3
+        "FF 50 78 2B 83 38 01 00 00 83 F8 06", "FF 50 78 2B 86 38 01 00 00 83 F8 06",   // tw
+        "FF 50 78 2B 07 83 F8 06", "FF 50 78 2B 06 83 F8 06" };                   // kw
 
     static List<uint> FindInterpWindow(byte[] img)
     {
@@ -1309,7 +1233,7 @@ static class Program
             {
                 int j = 0;
                 while (j < pat.Length && img[i + j] == pat[j]) j++;
-                if (j == pat.Length) list.Add(ImageBase + (uint)(i + pat.Length - 1));   // the 06
+                if (j == pat.Length) list.Add(ImageBase + (uint)(i + pat.Length - 1));
             }
         }
         return list.Count == 2 ? list : new List<uint>();
@@ -1328,7 +1252,7 @@ static class Program
         }
     }
 
-    // Tiny assembler for the stubs: raw bytes, labels, short jumps and rel32 calls/jumps.
+    // mini assembler for stubs
     class Asm
     {
         public readonly List<byte> B = new List<byte>();
@@ -1339,13 +1263,13 @@ static class Program
         public void E(params byte[] b) { B.AddRange(b); }
         public void D(uint v) { B.AddRange(BitConverter.GetBytes(v)); }
         public void L(string name) { labels[name] = B.Count; }
-        // Jump to a label, given the short opcode (EB = jmp, 7x = jcc); always emitted in the rel32 form.
+        // pass the short opcode, always emits rel32
         public void J(byte op, string name)
         {
             if (op == 0xEB) B.Add(0xE9); else { B.Add(0x0F); B.Add((byte)(0x80 + (op - 0x70))); }
             fixes.Add(Tuple.Create(B.Count, name)); D(0);
         }
-        public void Rel(byte op, uint target) { B.Add(op); D(target - (org + (uint)B.Count + 4)); }            // call/jmp rel32
+        public void Rel(byte op, uint target) { B.Add(op); D(target - (org + (uint)B.Count + 4)); }
         public byte[] Done(int max)
         {
             foreach (var f in fixes)
@@ -1359,15 +1283,10 @@ static class Program
         }
     }
 
-    // All three games split each 15 Hz logic tick into 6 phases. At 90 fps and up the engine runs
-    // one phase per drawn frame and starts the next tick right after phase 6, so a tick lasts
-    // 6 frames: RA3 at 120 fps ran 20 ticks/s, and a PC that couldn't hold its target (or C&C3,
-    // which fell below it) ran in slow motion; below 90 the stock batching was also a bit off.
-    // The per-frame engine update is hooked at every frame rate and ticks are scheduled by the
-    // clock instead: a tick starts every 66.67 ms (kept in 1/3 ms
-    // units so it's exact), the phases that are due by the clock run each frame (several at once
-    // on a slow PC, none on idle frames), and the interpolation value drawables use to blend
-    // between ticks is set to the time fraction, so movement stays smooth at any frame rate.
+    // each 15hz tick is 6 phases. at 90+ fps the engine does one phase per frame so a tick = 6 frames,
+    // meaning 120fps ran 20 ticks/s and slow pcs went slow-mo. so: schedule ticks off the clock instead
+    // (every 66.67ms, in 1/3ms units so it's exact), run whatever phases are due each frame, and set
+    // interp from the time so movement stays smooth
     class SchedSite { public uint Advance, Exit, TimeFn; public byte Phase, Interp; public uint Dispatch; }
 
     const string SchedPatternA = "8B 0D ?? ?? ?? ?? BB 01 00 00 00 88 99 C4 00 00 00 8B 4E 58 83 F9 06 75 1A 80 7E 64 00 74 14 A1 ?? ?? ?? ?? 33 D2 F7 35";
@@ -1381,9 +1300,7 @@ static class Program
         return va + 5 + BitConverter.ToUInt32(img, (int)(va + 1 - ImageBase));
     }
 
-    // A pacing site that computes fps / logic and then compares it with 6 (the phase dispatcher and
-    // the tick-boundary check): `mov r,[fps]` operand at `site`, then `xor edx,edx / div [logic]`,
-    // then `cmp reg,6` or `push 6` within a few bytes.
+    // fps/logic then cmp 6 (phase dispatcher + tick boundary)
     static bool IsPhaseRatioSite(byte[] img, uint site)
     {
         int o = (int)(site - ImageBase) + 4;
@@ -1396,13 +1313,13 @@ static class Program
     static SchedSite FindScheduler(byte[] img)
     {
         uint a = FindUnique(img, SchedPatternA), b = FindUnique(img, SchedPatternB), lim = FindUnique(img, LimiterPatternRA3);
-        if (a != 0 && b != 0 && b - a == 0x124 && lim != 0)   // RA3
+        if (a != 0 && b != 0 && b - a == 0x124 && lim != 0)   // ra3
         {
             var s = new SchedSite { Advance = a + 0x11, Exit = b + 0xD, Phase = 0x58, Interp = 0x60, Dispatch = 0x90, TimeFn = CallTarget(img, lim - 0x27) };
             return s.TimeFn != 0 ? s : null;
         }
         a = FindUnique(img, SchedPatternCnc3A); b = FindUnique(img, SchedPatternCnc3B); lim = FindUnique(img, LimiterPatternCnc3);
-        if (a != 0 && b != 0 && (b + 9) - (a + 9) == 0xCF && lim != 0)   // Tiberium Wars / Kane's Wrath
+        if (a != 0 && b != 0 && (b + 9) - (a + 9) == 0xCF && lim != 0)   // tw / kw
         {
             var s = new SchedSite { Advance = a + 9, Exit = b + 9, Phase = 0x40, Interp = 0x48, Dispatch = 0x94, TimeFn = CallTarget(img, lim + 20) };
             return s.TimeFn != 0 ? s : null;
@@ -1416,67 +1333,63 @@ static class Program
         uint eng = mem + 0x3C, r = mem + 0x38, now3 = mem + 0x80, t0 = mem + 0x84, pend = mem + 0x88, k200 = mem + 0x8C;
         uint stubA = mem + 0x800, stubB = mem + 0xA00, table = mem + 0xB0, tickFrame = mem + 0xC8, prevNow = mem + 0xCC;
         foreach (var e in new[] { 0, 33, 67, 100, 133, 167 }.Select((v, i) => new { v, i })) Write(proc, table + (uint)(e.i * 4), BitConverter.GetBytes(e.v));
-        uint exitGlobal = BitConverter.ToUInt32(img, (int)(site.Exit + 2 - ImageBase));   // mov ecx,[global] at the exit
+        uint exitGlobal = BitConverter.ToUInt32(img, (int)(site.Exit + 2 - ImageBase));
         byte ph = site.Phase;
         Write(proc, k200, BitConverter.GetBytes(200f));
 
-        // Stub A, called in place of `mov ecx,[esi+phase] / cmp ecx,6` (esi = engine).
+        // stub A: replaces mov ecx,[esi+phase] / cmp ecx,6
         var a = new Asm(stubA);
-        a.E(0x89, 0x35); a.D(eng);                                   // mov [engine],esi  (for the build-up clock)
+        a.E(0x89, 0x35); a.D(eng);                                   // mov [engine],esi
         a.E(0x50, 0x52, 0x51);                                       // push eax / push edx / push ecx
         a.E(0xA1); a.D(fpsVa); a.E(0x33, 0xD2, 0xB9, 0x0F, 0, 0, 0, 0xF7, 0xF1); a.E(0xA3); a.D(r);   // r = fps / 15
         a.Rel(0xE8, site.TimeFn);                                   // eax = ms (timeGetTime)
         a.E(0x8D, 0x04, 0x40); a.E(0xA3); a.D(now3);                 // now3 = ms * 3
-        a.E(0x83, 0x3D); a.D(t0); a.E(0x00); a.J(0x75, "have");     // first time: tick starts now
+        a.E(0x83, 0x3D); a.D(t0); a.E(0x00); a.J(0x75, "have");     // first run
         a.E(0xA3); a.D(t0);
         a.L("have");
         a.E(0x8B, 0x4E, ph);                                         // ecx = phase
-        a.E(0x83, 0x3D); a.D(pend); a.E(0x00); a.J(0x74, "nopend");  // did we start a tick last frame?
+        a.E(0x83, 0x3D); a.D(pend); a.E(0x00); a.J(0x74, "nopend");  // started a tick last frame?
         a.E(0xC7, 0x05); a.D(pend); a.D(0);
-        a.E(0x83, 0xF9, 0x06); a.J(0x72, "nopend");                 // phase wrapped: it really started
-        a.E(0x81, 0x2D); a.D(t0); a.D(200);                          // held back (network): undo, retry
+        a.E(0x83, 0xF9, 0x06); a.J(0x72, "nopend");                 // wrapped = it started
+        a.E(0x81, 0x2D); a.D(t0); a.D(200);                          // network held it back, undo
         a.L("nopend");
         a.E(0x8B, 0xD0, 0x2B, 0x15); a.D(t0);                        // edx = t = now3 - tickStart
         a.E(0x83, 0xF9, 0x06); a.J(0x72, "mid");
-        // phase 6 done: start the next tick once 66.67 ms have passed
+        // phase 6 done, next tick after 66.67ms
         a.E(0x81, 0xFA); a.D(200); a.J(0x7C, "idle");
         a.E(0x81, 0x05); a.D(t0); a.D(200);                          // tickStart += 200
-        a.E(0xA3); a.D(tickFrame);                                   // the frame this tick really starts on (for the interpolation)
+        a.E(0xA3); a.D(tickFrame);
         a.E(0xC7, 0x05); a.D(pend); a.D(1);
-        a.E(0x8B, 0xD0, 0x2B, 0x15); a.D(t0);                        // more than 2 ticks behind: resync
+        a.E(0x8B, 0xD0, 0x2B, 0x15); a.D(t0);                        // >2 ticks behind, resync
         a.E(0x81, 0xFA); a.D(400); a.J(0x7E, "pass");
         a.E(0xA3); a.D(t0); a.J(0xEB, "pass");
         a.L("mid");
-        // phases due = how many entries of the timetable T[0..5] are <= t (phase k runs once t >= T[k-1]).
-        // Phases 3-6 update the objects in buckets (movement), so they're spread evenly over the tick
-        // (1/8, 3/8, 5/8, 7/8); phase 2 (a few managers) rides along with phase 3.
+        // count timetable entries <= t. phases 3-6 are the object buckets so spread them out
         a.E(0x33, 0xC0);
         a.L("scan");
         a.E(0x3B, 0x14, 0x85); a.D(table); a.J(0x7C, "counted");      // cmp edx,[T + eax*4] / jl
         a.E(0x40, 0x83, 0xF8, 0x06); a.J(0x72, "scan");
         a.L("counted");
-        a.E(0x3B, 0xC1); a.J(0x76, "idle");                          // nothing due this frame
-        a.L("loop");                                                 // run all but the last due phase here
+        a.E(0x3B, 0xC1); a.J(0x76, "idle");                          // nothing due
+        a.L("loop");                                                 // all but the last one
         a.E(0x8D, 0x51, 0x01, 0x3B, 0xD0); a.J(0x73, "pass");
         a.E(0x89, 0x56, ph, 0x50, 0x52, 0x8B, 0xCE, 0x8B, 0x16, 0xFF, 0x92); a.D(site.Dispatch);   // [phase]=n / dispatch(n)
         a.E(0x58, 0x8B, 0x4E, ph); a.J(0xEB, "loop");
-        a.L("idle");                                                 // skip the phase code this frame
+        a.L("idle");
         a.E(0x59, 0x5A, 0x58, 0x83, 0xC4, 0x04, 0x57); a.Rel(0xE9, site.Exit);
-        a.L("pass");                                                 // original: advance one phase / start a tick
+        a.L("pass");                                                 // back to original
         a.E(0x59, 0x5A, 0x58, 0x8B, 0x4E, ph, 0x83, 0xF9, 0x06, 0xC3);
         Write(proc, stubA, a.Done(0x200));
 
-        // Stub B, called in place of `mov ecx,[global]` at the exit: interpolation = time fraction of the tick.
+        // stub B: replaces mov ecx,[global] at the exit.
+        // interp = (now - tickFrame + frame length) / 200, max 1. goes 1/8 .. 8/8 at 120
         var b = new Asm(stubB);
-        // Interpolation = (time since the frame this tick started + this frame's length) / 200, capped at 1:
-        // the frame a tick starts on reads one frame's worth and the last frame before the next tick
-        // reads ~1, so it rises evenly (1/8, 2/8 ... 8/8 at 120 fps) with no frozen frames.
         b.E(0x50, 0x52);
         b.E(0xA1); b.D(now3); b.E(0x8B, 0xD0, 0x2B, 0x15); b.D(prevNow);   // edx = frame length
         b.E(0xA3); b.D(prevNow);
         b.E(0x85, 0xD2); b.J(0x7D, "dpos"); b.E(0x33, 0xD2);
         b.L("dpos");
-        b.E(0x83, 0xFA, 0x64); b.J(0x7E, "dok"); b.E(0xBA); b.D(100);         // clamp to 0..100 units
+        b.E(0x83, 0xFA, 0x64); b.J(0x7E, "dok"); b.E(0xBA); b.D(100);         // clamp 0..100
         b.L("dok");
         b.E(0x2B, 0x05); b.D(tickFrame); b.E(0x03, 0xC2);                    // eax = now - tickFrame + frame length
         b.E(0x85, 0xC0); b.J(0x7D, "b1"); b.E(0x33, 0xC0);
@@ -1497,12 +1410,9 @@ static class Program
         }
     }
 
-    // Soviet/Empire build-up (StructureUnpackUpdate progress, used for both the rising model and the
-    // on-building bar) converts the build's start tick and duration to 30 fps client frames
-    // (tick / 15 * 1000 * framesPerMs), then measures "now" with GameClient::getFrame(), the real
-    // drawn-frame count. At 120 fps "now" runs 4x ahead of the start stamp, so the build looks done
-    // at once. Both getFrame reads are switched to the current logic tick put through the same
-    // conversion, which is what the drawn-frame count equals at stock 30 fps.
+    // soviet/empire construction (StructureUnpackUpdate). start + duration are in 30fps frames but
+    // "now" is getFrame() = drawn frames, so at 120 it's 4x ahead and builds pop in instantly.
+    // use the logic tick through the same conversion instead
     const string UnpackPattern =
         "8B 35 ?? ?? ?? ?? 8B 57 3C D9 86 BC 01 00 00 55 D9 5C 24 14 52 8B CE E8 ?? ?? ?? ?? D8 0D ?? ?? ?? ?? " +
         "D9 7C 24 12 8B CE 0F B7 44 24 12 D8 0D ?? ?? ?? ?? 0D 00 0C 00 00 89 44 24 18 8B 47 40 D8 4C 24 14 50 " +
@@ -1522,15 +1432,13 @@ static class Program
             int j = 0;
             while (j < pat.Length && (pat[j] < 0 || img[i + j] == pat[j])) j++;
             if (j < pat.Length) continue;
-            if (found >= 0) return 0;   // not unique: leave it alone
+            if (found >= 0) return 0;
             found = i;
         }
         return found < 0 ? 0 : ImageBase + (uint)found;
     }
 
-    // With engineVar (a slot the scheduler hook fills with the engine pointer every frame) the
-    // build-up runs in 1/240 s units and "now" includes the engine's between-ticks fraction, so the
-    // rise and the bar move every frame instead of in 15 steps a second.
+    // fine mode (engineVar set by the scheduler): 1/240s units + tick fraction so it's smooth
     static void PatchUnpack(IntPtr proc, byte[] img, uint block, uint stubVa, uint engineVar, uint fpmFineVa)
     {
         Func<uint, uint> rd = va => BitConverter.ToUInt32(img, (int)(va - ImageBase));
@@ -1540,11 +1448,11 @@ static class Program
                     && rd(block + 0x6D) == fpm && rd(block + 0xAD) == fpm;
         if (fine)
         {
-            uint spf = rd(conv + 0x18);   // seconds per logic frame, as used by the conversion
-            Write(proc, fpmFineVa, BitConverter.GetBytes(0.24f));   // 8x framesPerMs: 1/240 s units
+            uint spf = rd(conv + 0x18);   // seconds per logic frame
+            Write(proc, fpmFineVa, BitConverter.GetBytes(0.24f));   // 8x framesPerMs
             var f = new List<byte> { 0x51, 0x8B, 0x0D }; f.AddRange(u(logic));         // push ecx / mov ecx,[TheGameLogic]
             f.AddRange(new byte[] { 0xDB, 0x41, 0x50, 0xA1 }); f.AddRange(u(engineVar)); // fild [ecx+50h] / mov eax,[engine]
-            f.AddRange(new byte[] { 0x85, 0xC0, 0x74, 0x03, 0xD8, 0x40, 0x60 });        // test eax,eax / jz +3 / fadd [eax+60h] (tick fraction)
+            f.AddRange(new byte[] { 0x85, 0xC0, 0x74, 0x03, 0xD8, 0x40, 0x60 });        // fadd [eax+60h] if engine set
             f.AddRange(new byte[] { 0xD8, 0x0D }); f.AddRange(u(spf));                  // fmul [secondsPerFrame]
             f.AddRange(new byte[] { 0xD8, 0x0D }); f.AddRange(u(k1000));                // fmul [1000.0]
             f.AddRange(new byte[] { 0xD8, 0x0D }); f.AddRange(u(fpmFineVa));            // fmul [0.24]
@@ -1552,7 +1460,7 @@ static class Program
                                     0x89, 0x44, 0x24, 0x04, 0xD9, 0x6C, 0x24, 0x04, 0xDB, 0x5C, 0x24, 0x04, 0xD9, 0x2C, 0x24,
                                     0x8B, 0x44, 0x24, 0x04, 0x83, 0xC4, 0x08, 0x59, 0xC3 });   // truncate / pop ecx / ret
             Write(proc, stubVa, f.ToArray());
-            // The start stamp and duration conversions use the same fine unit.
+            // start + duration in the same units
             foreach (uint op in new[] { block + 0x2F, block + 0x6D, block + 0xAD })
             {
                 uint o;
@@ -1561,22 +1469,22 @@ static class Program
                 VirtualProtectEx(proc, (IntPtr)op, (UIntPtr)4, o, out o);
             }
         }
-        var s = new List<byte> { 0x51, 0x8B, 0x0D }; s.AddRange(u(logic));   // fallback: whole logic ticks in 30 fps units
-        s.AddRange(new byte[] { 0xFF, 0x71, 0x50 });                           // push [ecx+50h]  (current logic frame)
-        s.Add(0xE8); s.AddRange(u(conv - (stubVa + (uint)s.Count + 4)));        // call frames->seconds (ret 4)
+        var s = new List<byte> { 0x51, 0x8B, 0x0D }; s.AddRange(u(logic));   // fallback, whole ticks
+        s.AddRange(new byte[] { 0xFF, 0x71, 0x50 });                           // push [ecx+50h]
+        s.Add(0xE8); s.AddRange(u(conv - (stubVa + (uint)s.Count + 4)));        // frames -> seconds
         s.AddRange(new byte[] { 0xD8, 0x0D }); s.AddRange(u(k1000));            // fmul [1000.0]
         s.AddRange(new byte[] { 0xD8, 0x0D }); s.AddRange(u(fpm));              // fmul [framesPerMs]
-        s.AddRange(new byte[] { 0xD8, 0x89, 0xBC, 0x01, 0x00, 0x00 });          // fmul [ecx+1BCh]  (game speed, as the original)
+        s.AddRange(new byte[] { 0xD8, 0x89, 0xBC, 0x01, 0x00, 0x00 });          // fmul [ecx+1BCh] game speed
         s.AddRange(new byte[] { 0x83, 0xEC, 0x08, 0xD9, 0x3C, 0x24, 0x0F, 0xB7, 0x04, 0x24, 0x0D, 0x00, 0x0C, 0x00, 0x00,
                                 0x89, 0x44, 0x24, 0x04, 0xD9, 0x6C, 0x24, 0x04, 0xDB, 0x5C, 0x24, 0x04, 0xD9, 0x2C, 0x24,
-                                0x8B, 0x44, 0x24, 0x04, 0x83, 0xC4, 0x08 });   // truncate to int (same rounding mode as the original)
+                                0x8B, 0x44, 0x24, 0x04, 0x83, 0xC4, 0x08 });   // truncate
         s.AddRange(new byte[] { 0x59, 0xC3 });                                  // pop ecx / ret
         if (!fine) Write(proc, stubVa, s.ToArray());
 
-        // site 1: mov edx,[eax+74h] / fldcw [esp+12h] / call edx  ->  fldcw [esp+12h] / call stub
+        // mov edx,[eax+74h] / fldcw / call edx -> fldcw / call stub
         uint s1 = block + 0xD0;
         var p1 = new List<byte> { 0xD9, 0x6C, 0x24, 0x12, 0xE8 }; p1.AddRange(u(stubVa - (s1 + 9)));
-        // site 2: mov ecx,[TheGameClient] / mov edx,[ecx] / mov eax,[edx+74h] / call eax  ->  call stub / nops
+        // mov ecx,[client] / ... / call eax -> call stub
         uint s2 = block + 0xF5;
         var p2 = new List<byte> { 0xE8 }; p2.AddRange(u(stubVa - (s2 + 5))); p2.AddRange(Enumerable.Repeat((byte)0x90, 8));
         foreach (var site in new[] { Tuple.Create(s1, p1.ToArray()), Tuple.Create(s2, p2.ToArray()) })
@@ -1589,7 +1497,7 @@ static class Program
         }
     }
 
-    // End of the .text section in the file (raw offset == RVA in these games).
+    // raw offset == rva in these exes
     static int TextEnd(byte[] img)
     {
         int pe = BitConverter.ToInt32(img, 0x3C);
@@ -1597,11 +1505,8 @@ static class Program
         return (int)(BitConverter.ToUInt32(img, sec + 20) + BitConverter.ToUInt32(img, sec + 16));
     }
 
-    // TheFXParticleSystemManager's per-frame update (vtable +14h) first calls the simulation
-    // step, which advances every particle system one fixed 30 Hz step (no time delta), then
-    // rebuilds the per-blend-mode draw buckets. At higher render rates the simulation runs too
-    // often and additive smoke blows out to white. Only the simulation call may be throttled:
-    // skipping the bucket rebuild leaves stale pointers and crashes.
+    // particle manager update: sim step (fixed 30hz, no delta) then rebuilds draw buckets.
+    // sim too often = smoke goes white. only throttle the sim, skipping the rebuild crashes
     //   83 EC 08 53 55 56 57   sub esp,8 / push ebx,ebp,esi,edi
     //   8B F9 89 7C 24 14      mov edi,ecx / mov [esp+14h],edi
     //   E8 <sim>               call simulate          <- patched
@@ -1610,7 +1515,6 @@ static class Program
         0x83, 0xEC, 0x08, 0x53, 0x55, 0x56, 0x57, 0x8B, 0xF9, 0x89, 0x7C, 0x24, 0x14,
         0xE8, -1, -1, -1, -1, 0xC7, 0x87, 0x84, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 };
 
-    // Returns the VA of the 5-byte `call simulate`, or 0 if not found; sim = its target.
     static uint FindParticleSim(byte[] img, out uint sim)
     {
         var hits = Scan(img, ParticleUpdateSig);
@@ -1621,9 +1525,7 @@ static class Program
         return site;
     }
 
-    // Route the simulation call through a stub that only lets it through at 30 Hz:
-    //   acc += 30; if (acc >= fps) { acc -= fps; jmp simulate } else ret
-    // ecx (this) is left untouched so the tail jump behaves exactly like the original call.
+    // acc += 30; if (acc >= fps) { acc -= fps; jmp simulate } else ret
     static void ThrottleParticles(IntPtr proc, uint site, uint sim, uint fpsVa, uint accVa, uint stubVa)
     {
         var s = new List<byte>();
@@ -1663,7 +1565,7 @@ static class Program
         return r;
     }
 
-    // ---- Win32 ---------------------------------------------------------------
+    // ---- win32 ----
 
     const uint CREATE_SUSPENDED = 0x4, MEM_COMMIT = 0x1000, MEM_RESERVE = 0x2000;
     const uint PAGE_READWRITE = 0x04, PAGE_EXECUTE_READWRITE = 0x40;
@@ -1697,7 +1599,7 @@ static class Program
     static extern bool ReadProcessMemory(IntPtr h, IntPtr addr, byte[] buf, UIntPtr size, out UIntPtr read);
 }
 
-// Called by the drop-in DLL (ICLRRuntimeHost::ExecuteInDefaultAppDomain needs public static int Method(string)).
+// for the drop-in dll (ExecuteInDefaultAppDomain wants static int Method(string))
 public static class DllEntry
 {
     public static int Run(string dir) { return Program.InProcess(dir); }

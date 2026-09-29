@@ -1,23 +1,14 @@
-/*
- * C&C FPS Unlocker - drop-in DLL (d3d9.dll for Red Alert 3, dinput8.dll for Tiberium Wars / Kane's Wrath)
- * Copyright (C) 2026 TheeHorse. GPL v3 or later, see LICENSE.
+/* C&C FPS Unlocker drop-in dll - TheeHorse 2026, GPL v3
+ * d3d9.dll for ra3, dinput8.dll for tw/kw. forwards to the real dll, hooks the game's entry
+ * point and runs CnCFpsUnlocker.dll (same patches as the launcher) before the game starts.
  *
- * The game loads this instead of the Windows DLL of the same name. It forwards the one function
- * the game uses to the real DLL, and when it's loaded it hooks the game's entry point: just
- * before the game's own startup code runs, it starts .NET inside the game and calls
- * DllEntry.Run(folder) in CnCFpsUnlocker.dll, which applies the same in-memory patches as the
- * Steam launcher, then lets the game start normally. Nothing on disk is changed.
- *
- * Build (Tiny C Compiler): tcc -shared -DPROXY_D3D9 -o d3d9.dll proxy.c
- *                          tcc -shared -DPROXY_DINPUT8 -o dinput8.dll proxy.c
+ * tcc -shared -DPROXY_D3D9 -o d3d9.dll proxy.c
+ * tcc -shared -DPROXY_DINPUT8 -o dinput8.dll proxy.c
  */
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
 
-/* Every export of the real DLL is passed through, not only the one the game uses: other tools in
-   the game (Tacitus, the C&C:Online patcher, hooks Direct3D) look up the rest by name.
-   Each stub drops its own stack frame and jumps to the real function, so arguments, calling
-   convention and return value are untouched. */
+/* forward everything, tacitus looks up the other d3d9 exports by name and crashes otherwise */
 #ifdef PROXY_D3D9
 #define REAL_DLL L"\\d3d9.dll"
 #define EXPORTS(X) X(D3DPERF_BeginEvent) X(D3DPERF_EndEvent) X(D3DPERF_GetStatus) X(D3DPERF_QueryRepeatFrame) \
@@ -44,7 +35,7 @@ static void *entry_ptr;
 static void load_real(void)
 {
     WCHAR path[MAX_PATH];
-    GetSystemDirectoryW(path, MAX_PATH);   /* SysWOW64 for this 32-bit process */
+    GetSystemDirectoryW(path, MAX_PATH);   /* redirected to syswow64 */
     lstrcatW(path, REAL_DLL);
     real_dll = LoadLibraryW(path);
     if (!real_dll) return;
@@ -52,7 +43,7 @@ static void load_real(void)
     EXPORTS(RESOLVE)
 }
 
-/* --- hosting .NET 4 (mscoree) ------------------------------------------------------------ */
+/* --- .net 4 hosting --- */
 typedef struct { void **vt; } Com;
 typedef HRESULT(__stdcall *CreateInstanceFn)(const GUID *, const GUID *, void **);
 typedef HRESULT(__stdcall *GetRuntimeFn)(Com *, LPCWSTR, const GUID *, void **);
@@ -87,15 +78,13 @@ static void run_patches(void)
     ((ExecFn)host->vt[11])(host, assembly, L"DllEntry", L"Run", dll_dir, &ret);
 }
 
-/* Called from the entry-point hook, before the game's startup code. */
 static void __cdecl on_entry(void)
 {
     DWORD old;
     int i;
     if (entry_ptr == entry)
     {
-        /* Plain hook: put the entry back. (Not done in the chained case below, where other tools
-           like Tacitus may have hooked the entry after us - restoring would undo their hook.) */
+        /* only restore if we didn't chain (someone else might have hooked after us) */
         VirtualProtect(entry, 5, PAGE_EXECUTE_READWRITE, &old);
         for (i = 0; i < 5; i++) entry[i] = saved[i];
         VirtualProtect(entry, 5, old, &old);
@@ -129,11 +118,9 @@ BOOL WINAPI DllMain(HINSTANCE inst, DWORD reason, LPVOID reserved)
         load_real();
         if (!is_game_process()) return TRUE;
 
-        /* We're loaded as an import, before the exe's entry point runs, and under the loader
-           lock (no .NET here). Redirect the entry point to a small stub instead:
-           pushad / call on_entry / popad / [call <first call>] / jmp [entry_ptr]
-           All three games start with the MSVC `call __security_init_cookie`; the stub runs that
-           call itself and continues after it, so the entry bytes never need putting back. */
+        /* loader lock is held here so no .net yet. hook the entry point:
+           pushad / call on_entry / popad / [first call] / jmp [entry_ptr]
+           entry starts with call __security_init_cookie in all 3 games, run it from the stub */
         dos = (IMAGE_DOS_HEADER *)GetModuleHandleW(0);
         nt = (IMAGE_NT_HEADERS *)((BYTE *)dos + dos->e_lfanew);
         entry = (BYTE *)dos + nt->OptionalHeader.AddressOfEntryPoint;
