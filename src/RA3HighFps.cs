@@ -104,8 +104,8 @@ static class Program
             report += "fade frame reads: " + string.Join(", ", FindFadeFrameReads(c).Select(s => "0x" + s.ToString("X"))) + "\n";
             uint sbf, sbs = FindScrollBySlot(c, out sbf);
             report += string.Format("camera scrollBy @0x{0:X} (vtable slot 0x{1:X})\n", sbf, sbs);
-            uint sa, se; bool sf = FindScheduler(c, out sa, out se);
-            report += string.Format("tick scheduler: {0}\n", sf ? string.Format("advance @0x{0:X}, exit @0x{1:X}", sa, se) : "not found");
+            var ss = FindScheduler(c);
+            report += string.Format("tick scheduler: {0}\n", ss != null ? string.Format("advance @0x{0:X}, exit @0x{1:X}, clock @0x{2:X}", ss.Advance, ss.Exit, ss.TimeFn) : "not found");
             bool lr; uint ls = FindLimiterRounding(c, out lr);
             report += string.Format("limiter rounding @0x{0:X} ({1})\n", ls, ls == 0 ? "not found" : lr ? "inline" : "_ftol call");
             report += "anim2d frame reads: " + string.Join(", ", FindAnim2DFrameReads(c).Select(s => "0x" + s.ToString("X"))) + "\n";
@@ -164,8 +164,8 @@ static class Program
         uint limiter = FindLimiterRounding(img, out limiterRA3);
         uint scrollFunc, scrollSlot = FindScrollBySlot(img, out scrollFunc);
         List<uint> fades = FindFadeFrameReads(img);
-        uint schedAdvance, schedExit;
-        bool sched = FindScheduler(img, out schedAdvance, out schedExit);
+        SchedSite schedSite = FindScheduler(img);
+        bool sched = schedSite != null;
 
         string cmd = "\"" + exe + "\" -config \"" + sku + "\"" + (pass.Count > 0 ? " " + string.Join(" ", pass) : "");
         var si = new STARTUPINFO { cb = Marshal.SizeOf(typeof(STARTUPINFO)) };
@@ -182,9 +182,9 @@ static class Program
             Redirect(pi.hProcess, sites, (uint)mem);
             if (fades.Count > 0) PatchFadeFrameReads(pi.hProcess, img, fades, (uint)mem, (uint)mem + 0x440);   // drawable fade timers
             if (scrollSlot != 0 && fps > 30) PatchScrollBy(pi.hProcess, scrollSlot, scrollFunc, fps, (uint)mem + 0x4F0, (uint)mem + 0x4F8, (uint)mem + 0x3C0);   // camera scroll speed
-            if (sched) PatchScheduler(pi.hProcess, img, schedAdvance, schedExit, (uint)mem, (uint)mem);   // 15 ticks/s above 90 fps
+            if (sched) PatchScheduler(pi.hProcess, img, schedSite, (uint)mem, (uint)mem);   // 15 ticks/s at any fps above 90
             if (limiter != 0) PatchLimiterRounding(pi.hProcess, limiter, limiterRA3, (uint)mem + 0x28, (uint)mem + 0x2C, (uint)mem + 0x280);   // exact frame pacing
-            if (unpack != 0) PatchUnpack(pi.hProcess, img, unpack, (uint)mem + 0x200);   // Soviet/Empire build-up clock
+            if (unpack != 0) PatchUnpack(pi.hProcess, img, unpack, (uint)mem + 0x200, sched ? (uint)mem + 0x3C : 0, (uint)mem + 0x4E0);   // Soviet/Empire build-up clock
             if (anim2d.Count > 0) PatchAnim2D(pi.hProcess, img, anim2d, (uint)mem, (uint)mem + 0x100);   // 30 Hz sprite-animation clock
             if (modelStep != 0)   // model transitions: 1/fps per drawn frame instead of 1/30
             {
@@ -1104,10 +1104,13 @@ static class Program
     // CNCStuff/cnc3_fps_patch uses for C&C3.)
     const string ScrollByPattern = "A1 ?? ?? ?? ?? 83 EC 60 80 B8 BC 00 00 00 00 56 8B F1 74 06 80 7E 48 00 75 09 80 BE 35 27 00 00 00 74 09 33 C0 5E 83 C4 60 C2 04 00";
 
+    const string ScrollByPatternCnc3 = "55 8B EC A1 ?? ?? ?? ?? 83 EC 64 80 B8 CC 00 00 00 00 53 8B D9 74 0D 80 7B 44 00 74 07 33 C0 E9";
+
     // Returns the vtable slot holding scrollBy (0 if not found or ambiguous).
     static uint FindScrollBySlot(byte[] img, out uint func)
     {
         func = FindUnique(img, ScrollByPattern);
+        if (func == 0) func = FindUnique(img, ScrollByPatternCnc3);   // Tiberium Wars / Kane's Wrath
         if (func == 0) return 0;
         uint slot = 0;
         for (int o = TextEnd(img) & ~3; o + 4 <= img.Length; o += 4)
@@ -1135,81 +1138,149 @@ static class Program
         VirtualProtectEx(proc, (IntPtr)slot, (UIntPtr)4, old, out old);
     }
 
-    // RA3 splits each 15 Hz logic tick into 6 phases. Above 90 fps (more than 6 frames per tick)
-    // it runs one phase per frame and starts the next tick right after phase 6, so ticks take
-    // 6 frames instead of fps/15: 120 fps gave 20 ticks/s (33% fast), 240 gave 40. The per-frame
-    // engine update is hooked so that with R = fps/15 > 6 the phases are spread over R frames
-    // (phase p runs on frame ceil(p*6/R)... i.e. a phase only advances when the tick's elapsed
-    // frames call for it, idle frames in between), and the tick-interpolation value drawables use
-    // is set to frame/R every frame so movement stays smooth through the idle frames.
-    const string SchedPatternA = "8B 0D ?? ?? ?? ?? BB 01 00 00 00 88 99 C4 00 00 00 8B 4E 58 83 F9 06 75 1A 80 7E 64 00 74 14 A1 ?? ?? ?? ?? 33 D2 F7 35";
-    const string SchedPatternB = "8B 16 50 8B 82 90 00 00 00 8B CE FF D0 8B 0D ?? ?? ?? ?? 8B 11 8B 82 A0 00 00 00 5F 5E 5B 83 C4 04";
-
-    // Returns the phase-advance site (mov ecx,[esi+58h] / cmp ecx,6) and the common exit site.
-    static bool FindScheduler(byte[] img, out uint advance, out uint exit)
+    // Tiny assembler for the stubs: raw bytes, labels, short jumps and rel32 calls/jumps.
+    class Asm
     {
-        uint a = FindUnique(img, SchedPatternA), b = FindUnique(img, SchedPatternB);
-        advance = a + 0x11; exit = b + 0xD;
-        return a != 0 && b != 0 && b - a == 0x124;
+        public readonly List<byte> B = new List<byte>();
+        readonly uint org;
+        readonly Dictionary<string, int> labels = new Dictionary<string, int>();
+        readonly List<Tuple<int, string>> fixes = new List<Tuple<int, string>>();
+        public Asm(uint org) { this.org = org; }
+        public void E(params byte[] b) { B.AddRange(b); }
+        public void D(uint v) { B.AddRange(BitConverter.GetBytes(v)); }
+        public void L(string name) { labels[name] = B.Count; }
+        // Jump to a label, given the short opcode (EB = jmp, 7x = jcc); always emitted in the rel32 form.
+        public void J(byte op, string name)
+        {
+            if (op == 0xEB) B.Add(0xE9); else { B.Add(0x0F); B.Add((byte)(0x80 + (op - 0x70))); }
+            fixes.Add(Tuple.Create(B.Count, name)); D(0);
+        }
+        public void Rel(byte op, uint target) { B.Add(op); D(target - (org + (uint)B.Count + 4)); }            // call/jmp rel32
+        public byte[] Done(int max)
+        {
+            foreach (var f in fixes)
+            {
+                int rel = labels[f.Item2] - (f.Item1 + 4);
+                byte[] r = BitConverter.GetBytes(rel);
+                for (int i = 0; i < 4; i++) B[f.Item1 + i] = r[i];
+            }
+            if (B.Count > max) throw new Exception("stub too big");
+            return B.ToArray();
+        }
     }
 
-    static void PatchScheduler(IntPtr proc, byte[] img, uint advance, uint exit, uint fpsVa, uint mem)
+    // All three games split each 15 Hz logic tick into 6 phases. At 90 fps and up the engine runs
+    // one phase per drawn frame and starts the next tick right after phase 6, so a tick lasts
+    // 6 frames: RA3 at 120 fps ran 20 ticks/s, and a PC that couldn't hold its target (or C&C3,
+    // which fell below it) ran in slow motion. Above 90 fps the per-frame engine update is hooked
+    // and ticks are scheduled by the clock instead: a tick starts every 66.67 ms (kept in 1/3 ms
+    // units so it's exact), the phases that are due by the clock run each frame (several at once
+    // on a slow PC, none on idle frames), and the interpolation value drawables use to blend
+    // between ticks is set to the time fraction, so movement stays smooth at any frame rate.
+    class SchedSite { public uint Advance, Exit, TimeFn; public byte Phase, Interp; public uint Dispatch; }
+
+    const string SchedPatternA = "8B 0D ?? ?? ?? ?? BB 01 00 00 00 88 99 C4 00 00 00 8B 4E 58 83 F9 06 75 1A 80 7E 64 00 74 14 A1 ?? ?? ?? ?? 33 D2 F7 35";
+    const string SchedPatternB = "8B 16 50 8B 82 90 00 00 00 8B CE FF D0 8B 0D ?? ?? ?? ?? 8B 11 8B 82 A0 00 00 00 5F 5E 5B 83 C4 04";
+    const string SchedPatternCnc3A = "33 DB 43 88 98 D4 00 00 00 8B 4E 40 83 F9 06 75 1A 80 7E 4C 00 74 14 A1";
+    const string SchedPatternCnc3B = "8B 16 50 FF 92 94 00 00 00 8B 0D ?? ?? ?? ?? 8B 01 FF 90";
+
+    static uint CallTarget(byte[] img, uint va)
+    {
+        if (va == 0 || img[va - ImageBase] != 0xE8) return 0;
+        return va + 5 + BitConverter.ToUInt32(img, (int)(va + 1 - ImageBase));
+    }
+
+    static SchedSite FindScheduler(byte[] img)
+    {
+        uint a = FindUnique(img, SchedPatternA), b = FindUnique(img, SchedPatternB), lim = FindUnique(img, LimiterPatternRA3);
+        if (a != 0 && b != 0 && b - a == 0x124 && lim != 0)   // RA3
+        {
+            var s = new SchedSite { Advance = a + 0x11, Exit = b + 0xD, Phase = 0x58, Interp = 0x60, Dispatch = 0x90, TimeFn = CallTarget(img, lim - 0x27) };
+            return s.TimeFn != 0 ? s : null;
+        }
+        a = FindUnique(img, SchedPatternCnc3A); b = FindUnique(img, SchedPatternCnc3B); lim = FindUnique(img, LimiterPatternCnc3);
+        if (a != 0 && b != 0 && (b + 9) - (a + 9) == 0xCF && lim != 0)   // Tiberium Wars / Kane's Wrath
+        {
+            var s = new SchedSite { Advance = a + 9, Exit = b + 9, Phase = 0x40, Interp = 0x48, Dispatch = 0x94, TimeFn = CallTarget(img, lim + 20) };
+            return s.TimeFn != 0 ? s : null;
+        }
+        return null;
+    }
+
+    static void PatchScheduler(IntPtr proc, byte[] img, SchedSite site, uint fpsVa, uint mem)
     {
         Func<uint, byte[]> u = BitConverter.GetBytes;
-        uint k = mem + 0x30, last = mem + 0x34, r = mem + 0x38, stubA = mem + 0x300, stubB = mem + 0x380;
-        uint exitGlobal = BitConverter.ToUInt32(img, (int)(exit + 2 - ImageBase));   // mov ecx,[global] at the exit
+        uint eng = mem + 0x3C, r = mem + 0x38, now3 = mem + 0x80, t0 = mem + 0x84, pend = mem + 0x88, k200 = mem + 0x8C;
+        uint stubA = mem + 0x800, stubB = mem + 0xA00;
+        uint exitGlobal = BitConverter.ToUInt32(img, (int)(site.Exit + 2 - ImageBase));   // mov ecx,[global] at the exit
+        byte ph = site.Phase;
+        Write(proc, k200, BitConverter.GetBytes(200f));
 
-        // Stub A, called in place of `mov ecx,[esi+58h] / cmp ecx,6` (esi = engine, [esi+58h] = phase).
-        var a = new List<byte>();
-        Action<byte[]> A = bs => a.AddRange(bs);
-        A(new byte[] { 0x50, 0x52, 0xA1 }); A(u(fpsVa));                        // push eax / push edx / mov eax,[fps]
-        A(new byte[] { 0x33, 0xD2, 0xB9, 0x0F, 0x00, 0x00, 0x00, 0xF7, 0xF1 }); // eax = fps / 15
-        A(new byte[] { 0xA3 }); A(u(r));                                       // mov [r],eax
-        A(new byte[] { 0x83, 0xF8, 0x06, 0x76, 0x00 }); int jPass1 = a.Count - 1;   // cmp eax,6 / jbe PASS
-        A(new byte[] { 0x8B, 0x4E, 0x58, 0x3B, 0x0D }); A(u(last));             // ecx = phase / cmp ecx,[last]
-        A(new byte[] { 0x73, 0x0A, 0xC7, 0x05 }); A(u(k)); A(u(1u));           // jae +10 / mov [k],1   (phase wrapped: last frame started a tick)
-        A(new byte[] { 0x89, 0x0D }); A(u(last));                               // mov [last],ecx
-        A(new byte[] { 0xFF, 0x05 }); A(u(k));                                  // inc [k]   (k = this frame's index in the tick)
-        A(new byte[] { 0x83, 0xF9, 0x06, 0x72, 0x00 }); int jMid = a.Count - 1;     // cmp ecx,6 / jb MID
-        A(new byte[] { 0xA1 }); A(u(k)); A(new byte[] { 0x3B, 0x05 }); A(u(r)); // mov eax,[k] / cmp eax,[r]
-        A(new byte[] { 0x77, 0x00 }); int jPass2 = a.Count - 1;                  // ja PASS   (tick used up: start the next one)
-        A(new byte[] { 0xEB, 0x00 }); int jIdle1 = a.Count - 1;                  // jmp IDLE
-        int mid = a.Count;
-        A(new byte[] { 0xA1 }); A(u(k));                                        // eax = k
-        A(new byte[] { 0x6B, 0xC0, 0x06, 0x03, 0x05 }); A(u(r));                // eax = k*6 + r
-        A(new byte[] { 0x48, 0x33, 0xD2, 0xF7, 0x35 }); A(u(r));                // eax = (k*6 + r - 1) / r   = ceil(k*6/r)
-        A(new byte[] { 0x3B, 0xC1, 0x77, 0x00 }); int jPass3 = a.Count - 1;     // cmp eax,ecx / ja PASS   (due for the next phase)
-        int idle = a.Count;                                                     // IDLE: no phase this frame
-        A(new byte[] { 0x5A, 0x58, 0x83, 0xC4, 0x04, 0x57, 0xE9 });             // pop edx / pop eax / drop ret / push edi / jmp exit
-        A(u(exit - (stubA + (uint)a.Count + 4)));
-        int pass = a.Count;                                                     // PASS: run the original code
-        A(new byte[] { 0x5A, 0x58, 0x8B, 0x4E, 0x58, 0x83, 0xF9, 0x06, 0xC3 }); // pop edx / pop eax / mov ecx,[esi+58h] / cmp ecx,6 / ret
-        a[jPass1] = (byte)(pass - (jPass1 + 1)); a[jMid] = (byte)(mid - (jMid + 1));
-        a[jPass2] = (byte)(pass - (jPass2 + 1)); a[jIdle1] = (byte)(idle - (jIdle1 + 1));
-        a[jPass3] = (byte)(pass - (jPass3 + 1));
-        Write(proc, stubA, a.ToArray());
+        // Stub A, called in place of `mov ecx,[esi+phase] / cmp ecx,6` (esi = engine).
+        var a = new Asm(stubA);
+        a.E(0x89, 0x35); a.D(eng);                                   // mov [engine],esi  (for the build-up clock)
+        a.E(0x50, 0x52, 0x51);                                       // push eax / push edx / push ecx
+        a.E(0xA1); a.D(fpsVa); a.E(0x33, 0xD2, 0xB9, 0x0F, 0, 0, 0, 0xF7, 0xF1); a.E(0xA3); a.D(r);   // r = fps / 15
+        a.E(0x83, 0xF8, 0x06); a.J(0x76, "pass");                   // 90 fps or less: stock behaviour
+        a.Rel(0xE8, site.TimeFn);                                    // eax = ms (timeGetTime)
+        a.E(0x8D, 0x04, 0x40); a.E(0xA3); a.D(now3);                 // now3 = ms * 3
+        a.E(0x83, 0x3D); a.D(t0); a.E(0x00); a.J(0x75, "have");     // first time: tick starts now
+        a.E(0xA3); a.D(t0);
+        a.L("have");
+        a.E(0x8B, 0x4E, ph);                                         // ecx = phase
+        a.E(0x83, 0x3D); a.D(pend); a.E(0x00); a.J(0x74, "nopend");  // did we start a tick last frame?
+        a.E(0xC7, 0x05); a.D(pend); a.D(0);
+        a.E(0x83, 0xF9, 0x06); a.J(0x72, "nopend");                 // phase wrapped: it really started
+        a.E(0x81, 0x2D); a.D(t0); a.D(200);                          // held back (network): undo, retry
+        a.L("nopend");
+        a.E(0x8B, 0xD0, 0x2B, 0x15); a.D(t0);                        // edx = t = now3 - tickStart
+        a.E(0x83, 0xF9, 0x06); a.J(0x72, "mid");
+        // phase 6 done: start the next tick once 66.67 ms have passed
+        a.E(0x81, 0xFA); a.D(200); a.J(0x7C, "idle");
+        a.E(0x81, 0x05); a.D(t0); a.D(200);                          // tickStart += 200
+        a.E(0xC7, 0x05); a.D(pend); a.D(1);
+        a.E(0x8B, 0xD0, 0x2B, 0x15); a.D(t0);                        // more than 2 ticks behind: resync
+        a.E(0x81, 0xFA); a.D(400); a.J(0x7E, "pass");
+        a.E(0xA3); a.D(t0); a.J(0xEB, "pass");
+        a.L("mid");
+        // phases due = 1 + ceil(t * 6 / 200), capped at 6
+        a.E(0x8D, 0x04, 0x52, 0x85, 0xC0); a.J(0x7D, "pos"); a.E(0x33, 0xC0);
+        a.L("pos");
+        a.E(0x83, 0xC0, 0x63, 0x33, 0xD2, 0x51, 0xB9, 0x64, 0, 0, 0, 0xF7, 0xF1, 0x59, 0x40);
+        a.E(0x83, 0xF8, 0x06); a.J(0x76, "cap"); a.E(0xB8, 6, 0, 0, 0);
+        a.L("cap");
+        a.E(0x3B, 0xC1); a.J(0x76, "idle");                          // nothing due this frame
+        a.L("loop");                                                 // run all but the last due phase here
+        a.E(0x8D, 0x51, 0x01, 0x3B, 0xD0); a.J(0x73, "pass");
+        a.E(0x89, 0x56, ph, 0x50, 0x52, 0x8B, 0xCE, 0x8B, 0x16, 0xFF, 0x92); a.D(site.Dispatch);   // [phase]=n / dispatch(n)
+        a.E(0x58, 0x8B, 0x4E, ph); a.J(0xEB, "loop");
+        a.L("idle");                                                 // skip the phase code this frame
+        a.E(0x59, 0x5A, 0x58, 0x83, 0xC4, 0x04, 0x57); a.Rel(0xE9, site.Exit);
+        a.L("pass");                                                 // original: advance one phase / start a tick
+        a.E(0x59, 0x5A, 0x58, 0x8B, 0x4E, ph, 0x83, 0xF9, 0x06, 0xC3);
+        Write(proc, stubA, a.Done(0x200));
 
-        // Stub B, called in place of `mov ecx,[global]` at the exit: interpolation = min(1, k/r).
-        var b = new List<byte>();
-        Action<byte[]> B = bs => b.AddRange(bs);
-        B(new byte[] { 0x50, 0xA1 }); B(u(r)); B(new byte[] { 0x83, 0xF8, 0x06, 0x76, 0x00 }); int jDone = b.Count - 1;
-        B(new byte[] { 0xA1 }); B(u(k)); B(new byte[] { 0x3B, 0x05 }); B(u(r));  // eax = k / cmp eax,[r]
-        B(new byte[] { 0x76, 0x05, 0xB8, 0x01, 0x00, 0x00, 0x00 });              // jbe +5 / mov eax,1  (tick start frame)
-        B(new byte[] { 0x50, 0xD9, 0xE8, 0xDB, 0x04, 0x24, 0xDA, 0x35 }); B(u(r)); // push eax / fld1 / fild [esp] / fidiv [r]
-        B(new byte[] { 0xDB, 0xF1, 0xDB, 0xC1, 0xD9, 0x5E, 0x60, 0xDD, 0xD8, 0x58 }); // fcomi / fcmovnb / fstp [esi+60h] / fstp st0 / pop eax
-        int done = b.Count;
-        B(new byte[] { 0x58, 0x8B, 0x0D }); B(u(exitGlobal)); B(new byte[] { 0xC3 }); // pop eax / mov ecx,[global] / ret
-        b[jDone] = (byte)(done - (jDone + 1));
-        Write(proc, stubB, b.ToArray());
+        // Stub B, called in place of `mov ecx,[global]` at the exit: interpolation = time fraction of the tick.
+        var b = new Asm(stubB);
+        b.E(0x50, 0xA1); b.D(r); b.E(0x83, 0xF8, 0x06); b.J(0x76, "done");
+        b.E(0xA1); b.D(now3); b.E(0x2B, 0x05); b.D(t0);
+        b.E(0x85, 0xC0); b.J(0x7D, "b1"); b.E(0x33, 0xC0);
+        b.L("b1");
+        b.E(0x3D); b.D(200); b.J(0x7E, "b2"); b.E(0xB8); b.D(200);
+        b.L("b2");
+        b.E(0x50, 0xDB, 0x04, 0x24, 0xD8, 0x35); b.D(k200); b.E(0xD9, 0x5E, site.Interp, 0x58);   // [interp] = t / 200
+        b.L("done");
+        b.E(0x58, 0x8B, 0x0D); b.D(exitGlobal); b.E(0xC3);
+        Write(proc, stubB, b.Done(0x100));
 
-        foreach (var site in new[] { Tuple.Create(advance, stubA, 6), Tuple.Create(exit, stubB, 6) })
+        foreach (var s in new[] { Tuple.Create(site.Advance, stubA), Tuple.Create(site.Exit, stubB) })
         {
-            var p = new List<byte> { 0xE8 }; p.AddRange(u(site.Item2 - (site.Item1 + 5))); p.Add(0x90);
+            var p = new List<byte> { 0xE8 }; p.AddRange(u(s.Item2 - (s.Item1 + 5))); p.Add(0x90);
             uint old;
-            if (!VirtualProtectEx(proc, (IntPtr)site.Item1, (UIntPtr)6, PAGE_EXECUTE_READWRITE, out old))
+            if (!VirtualProtectEx(proc, (IntPtr)s.Item1, (UIntPtr)6, PAGE_EXECUTE_READWRITE, out old))
                 throw new Exception("VirtualProtectEx failed.");
-            Write(proc, site.Item1, p.ToArray());
-            VirtualProtectEx(proc, (IntPtr)site.Item1, (UIntPtr)6, old, out old);
+            Write(proc, s.Item1, p.ToArray());
+            VirtualProtectEx(proc, (IntPtr)s.Item1, (UIntPtr)6, old, out old);
         }
     }
 
@@ -1244,12 +1315,40 @@ static class Program
         return found < 0 ? 0 : ImageBase + (uint)found;
     }
 
-    static void PatchUnpack(IntPtr proc, byte[] img, uint block, uint stubVa)
+    // With engineVar (a slot the scheduler hook fills with the engine pointer every frame) the
+    // build-up runs in 1/240 s units and "now" includes the engine's between-ticks fraction, so the
+    // rise and the bar move every frame instead of in 15 steps a second.
+    static void PatchUnpack(IntPtr proc, byte[] img, uint block, uint stubVa, uint engineVar, uint fpmFineVa)
     {
         Func<uint, uint> rd = va => BitConverter.ToUInt32(img, (int)(va - ImageBase));
         Func<uint, byte[]> u = BitConverter.GetBytes;
         uint logic = rd(block + 2), conv = block + 0x17 + 5 + rd(block + 0x18), k1000 = rd(block + 0x1E), fpm = rd(block + 0x2F);
-        var s = new List<byte> { 0x51, 0x8B, 0x0D }; s.AddRange(u(logic));   // push ecx / mov ecx,[TheGameLogic]
+        bool fine = engineVar != 0 && img[conv + 0x16 - ImageBase] == 0xD8 && img[conv + 0x17 - ImageBase] == 0x0D
+                    && rd(block + 0x6D) == fpm && rd(block + 0xAD) == fpm;
+        if (fine)
+        {
+            uint spf = rd(conv + 0x18);   // seconds per logic frame, as used by the conversion
+            Write(proc, fpmFineVa, BitConverter.GetBytes(0.24f));   // 8x framesPerMs: 1/240 s units
+            var f = new List<byte> { 0x51, 0x8B, 0x0D }; f.AddRange(u(logic));         // push ecx / mov ecx,[TheGameLogic]
+            f.AddRange(new byte[] { 0xDB, 0x41, 0x50, 0xA1 }); f.AddRange(u(engineVar)); // fild [ecx+50h] / mov eax,[engine]
+            f.AddRange(new byte[] { 0x85, 0xC0, 0x74, 0x03, 0xD8, 0x40, 0x60 });        // test eax,eax / jz +3 / fadd [eax+60h] (tick fraction)
+            f.AddRange(new byte[] { 0xD8, 0x0D }); f.AddRange(u(spf));                  // fmul [secondsPerFrame]
+            f.AddRange(new byte[] { 0xD8, 0x0D }); f.AddRange(u(k1000));                // fmul [1000.0]
+            f.AddRange(new byte[] { 0xD8, 0x0D }); f.AddRange(u(fpmFineVa));            // fmul [0.24]
+            f.AddRange(new byte[] { 0x83, 0xEC, 0x08, 0xD9, 0x3C, 0x24, 0x0F, 0xB7, 0x04, 0x24, 0x0D, 0x00, 0x0C, 0x00, 0x00,
+                                    0x89, 0x44, 0x24, 0x04, 0xD9, 0x6C, 0x24, 0x04, 0xDB, 0x5C, 0x24, 0x04, 0xD9, 0x2C, 0x24,
+                                    0x8B, 0x44, 0x24, 0x04, 0x83, 0xC4, 0x08, 0x59, 0xC3 });   // truncate / pop ecx / ret
+            Write(proc, stubVa, f.ToArray());
+            // The start stamp and duration conversions use the same fine unit.
+            foreach (uint op in new[] { block + 0x2F, block + 0x6D, block + 0xAD })
+            {
+                uint o;
+                VirtualProtectEx(proc, (IntPtr)op, (UIntPtr)4, PAGE_EXECUTE_READWRITE, out o);
+                Write(proc, op, u(fpmFineVa));
+                VirtualProtectEx(proc, (IntPtr)op, (UIntPtr)4, o, out o);
+            }
+        }
+        var s = new List<byte> { 0x51, 0x8B, 0x0D }; s.AddRange(u(logic));   // fallback: whole logic ticks in 30 fps units
         s.AddRange(new byte[] { 0xFF, 0x71, 0x50 });                           // push [ecx+50h]  (current logic frame)
         s.Add(0xE8); s.AddRange(u(conv - (stubVa + (uint)s.Count + 4)));        // call frames->seconds (ret 4)
         s.AddRange(new byte[] { 0xD8, 0x0D }); s.AddRange(u(k1000));            // fmul [1000.0]
@@ -1259,7 +1358,7 @@ static class Program
                                 0x89, 0x44, 0x24, 0x04, 0xD9, 0x6C, 0x24, 0x04, 0xDB, 0x5C, 0x24, 0x04, 0xD9, 0x2C, 0x24,
                                 0x8B, 0x44, 0x24, 0x04, 0x83, 0xC4, 0x08 });   // truncate to int (same rounding mode as the original)
         s.AddRange(new byte[] { 0x59, 0xC3 });                                  // pop ecx / ret
-        Write(proc, stubVa, s.ToArray());
+        if (!fine) Write(proc, stubVa, s.ToArray());
 
         // site 1: mov edx,[eax+74h] / fldcw [esp+12h] / call edx  ->  fldcw [esp+12h] / call stub
         uint s1 = block + 0xD0;
