@@ -56,7 +56,7 @@ The setup has an **Extras...** button for stuff that isn't about frame rate. All
 ## Is it safe?
 
 - It doesn't touch any game files. It starts the normal game, changes a few timing values in memory while it's starting, and that's it
-- Source is right here in `src/RA3HighFps.cs`, plain C#. If you don't trust the exe (fair enough) download the repo and run `build-from-source.bat` to build it yourself. It uses the C# compiler that already comes with Windows
+- Source is right here in `src/RA3HighFps.cs`, plain C#. If you don't trust the exe (fair enough) download the repo and run `build-from-source.bat` to build it yourself. It uses the C# compiler that already comes with Windows and builds both `RA3HighFps.exe` and the `CnCFpsUnlocker.dll` from the drop-in zip (same source file, the dll is just the library version). The small `d3d9.dll` / `dinput8.dll` are built from [`dll/proxy.c`](dll/proxy.c), about 150 lines, with `dll/build.ps1`
 - Some antivirus programs don't like unsigned exes that mess with another program's memory. That's why the source is public
 
 ## Online
