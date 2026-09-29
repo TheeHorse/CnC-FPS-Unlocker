@@ -26,7 +26,6 @@ It has to be a multiple of 15 (60, 75, 90, 120, 135, 165, 240...). These games t
 
 ## Known issues
 
-- **RA3: Soviet and Empire buildings look finished instantly** (the build-up animation and the progress bar on the building). They still only become usable after the real build time. Allied buildings are fine. ([#3](../../issues/3))
 - Camera scrolling is more sensitive at higher fps ([#2](../../issues/2))
 - Some effects play too fast (e.g. RA3 power plant fog), and the TW/KW Ion Cannon hit effect looks off ([#4](../../issues/4), [#5](../../issues/5))
 
@@ -58,7 +57,9 @@ The full story, including how I tracked the flicker down with a frame-by-frame g
 
 ## Older versions and mods
 
-The normal RA3 launcher options still work, just put them **after** `%command%` in the Steam launch options:
+Easiest way: tick **"Show a mod & version picker when the game starts"** in the setup. Every time you launch RA3 you get a small window where you pick a mod (it lists what's in `Documents\Red Alert 3\Mods`, or browse to a `.skudef`) and a game version. On "Auto" it uses whatever version the mod asks for, so mods that need 1.12 just work. It remembers your last pick.
+
+The normal RA3 launcher options also still work, just put them **after** `%command%` in the Steam launch options:
 
 - `-runver 1.12` runs the 1.12 version instead of the newest one (a lot of mods need 1.12)
 - `-modConfig "C:\path\to\mod\mod.skudef"` loads a mod

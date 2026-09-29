@@ -58,6 +58,7 @@ static class Program
         string extra = ReadIni(Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "RA3HighFps.ini"), "extra");
         // Experimental: also update cached "frames per logic tick" copies. ini: ticks=on
         bool ticks = ReadIni(Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "RA3HighFps.ini"), "ticks") == "on";
+        bool menu = ReadIni(Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "RA3HighFps.ini"), "menu") == "on";   // mod / version picker on launch
         string check = null, game = null, lang = null;
         int runver = -1;   // -runver 1.12 (the stock launcher option): run that game version instead of the newest
         var pass = new List<string>();
@@ -68,13 +69,14 @@ static class Program
             else if (argv[i] == "--pfx" && i + 1 < argv.Length) throttlePfx = argv[++i] != "off";
             else if (argv[i] == "--extra" && i + 1 < argv.Length) extra = argv[++i];
             else if (argv[i] == "--ticks" && i + 1 < argv.Length) ticks = argv[++i] == "on";
-            else if (argv[i] == "--game" && i + 1 < argv.Length) game = argv[++i];
+            else if (argv[i] == "--game" && i + 1 < argv.Length) game = argv[++i].Trim('"');
             else if (argv[i] == "--lang" && i + 1 < argv.Length) lang = argv[++i].ToLowerInvariant();   // e.g. --lang german
             // The stock launcher's own options: -runver picks the SkuDef version; -ui (its launcher window) has no
             // equivalent here, so it's dropped rather than passed to the game.
             else if (argv[i].Equals("-runver", StringComparison.OrdinalIgnoreCase) && i + 1 < argv.Length) runver = int.Parse(argv[++i].Split('.').Last());
             else if (argv[i].Equals("-ui", StringComparison.OrdinalIgnoreCase)) continue;
             else if (argv[i] == "--play") continue;   // shortcut to the installed copy: just launch this folder's game
+            else if (argv[i] == "--menu") menu = true;
             // apitrace's d3d9.dll wrapper (when present in the exe folder) writes its trace here.
             else if (argv[i] == "--trace" && i + 1 < argv.Length) Environment.SetEnvironmentVariable("TRACE_FILE", argv[++i]);
             // Steam runs us as `RA3HighFps.exe %command%`, so the first thing after our own
@@ -97,6 +99,9 @@ static class Program
             string report = string.Format("render_fps @0x{0:X} = {1}, logic_fps = {2}\nsites: {3}\nparticle sim call @0x{4:X} (target 0x{5:X})\n",
                 cr, BitConverter.ToInt32(c, (int)(cr - ImageBase)), BitConverter.ToInt32(c, (int)(cr - 4 - ImageBase)),
                 string.Join(", ", cs.Select(s => "0x" + s.ToString("X"))), ps, pm);
+            report += string.Format("model transition step operand @0x{0:X}\n", FindModelTransitionStep(c));
+            report += string.Format("structure build-up block @0x{0:X}\n", FindUnpackProgress(c));
+            report += "anim2d frame reads: " + string.Join(", ", FindAnim2DFrameReads(c).Select(s => "0x" + s.ToString("X"))) + "\n";
             var cx = FindExtraSites(c, cr, cr - 4, cs);
             report += "tick stores: " + string.Join(", ", FindTickStores(c, cr, cr - 4).Select(s => "0x" + s.ToString("X"))) + "\n";
             report += string.Format("extra ({0}):\n{1}\n", cx.Count,
@@ -108,6 +113,29 @@ static class Program
         // Double-clicked copy that already lives in a game folder: that's the game.
         if (game == null && IsGameFolder(AppDomain.CurrentDomain.BaseDirectory)) game = AppDomain.CurrentDomain.BaseDirectory;
         if (game == null) throw new Exception("Run this through Steam (launch option) or from the setup window.");
+        if (menu)
+        {
+            Application.EnableVisualStyles();
+            using (var m = new MenuForm(game, lang))
+            {
+                if (m.ShowDialog() != DialogResult.OK) return 0;
+                runver = m.Version;
+                if (m.ModConfig != null) { pass.Add("-modConfig"); pass.Add("\"" + m.ModConfig + "\""); }
+            }
+        }
+        // A mod's skudef says which game version it's built for ("mod-game 1.12"); the stock
+        // launcher switches to that version, so do the same unless -runver was given.
+        int mi = pass.FindIndex(a => a.Equals("-modConfig", StringComparison.OrdinalIgnoreCase));
+        if (runver < 0 && mi >= 0 && mi + 1 < pass.Count)
+        {
+            string modCfg = pass[mi + 1].Trim('"');
+            if (File.Exists(modCfg))
+                foreach (string line in File.ReadAllLines(modCfg))
+                {
+                    var mg = Regex.Match(line, @"^\s*mod-game\s+1\.(\d+)", RegexOptions.IgnoreCase);
+                    if (mg.Success) { runver = int.Parse(mg.Groups[1].Value); break; }
+                }
+        }
         string sku = LatestSkuDef(game, lang, runver);
         string exe = Path.Combine(game, SetExe(sku));
 
@@ -117,6 +145,9 @@ static class Program
         sites.AddRange(SelectSites(FindExtraSites(img, render, render - 4, sites), extra));
         if (ticks) sites.AddRange(FindTickStores(img, render, render - 4));
         uint pfxSim, pfxSite = FindParticleSim(img, out pfxSim);
+        uint modelStep = FindModelTransitionStep(img);
+        List<uint> anim2d = FindAnim2DFrameReads(img);
+        uint unpack = FindUnpackProgress(img);
 
         string cmd = "\"" + exe + "\" -config \"" + sku + "\"" + (pass.Count > 0 ? " " + string.Join(" ", pass) : "");
         var si = new STARTUPINFO { cb = Marshal.SizeOf(typeof(STARTUPINFO)) };
@@ -131,6 +162,13 @@ static class Program
             if (mem == IntPtr.Zero) throw new Exception("VirtualAllocEx failed.");
             Write(pi.hProcess, (uint)mem, BitConverter.GetBytes(fps));
             Redirect(pi.hProcess, sites, (uint)mem);
+            if (unpack != 0) PatchUnpack(pi.hProcess, img, unpack, (uint)mem + 0x200);   // Soviet/Empire build-up clock
+            if (anim2d.Count > 0) PatchAnim2D(pi.hProcess, img, anim2d, (uint)mem, (uint)mem + 0x100);   // 30 Hz sprite-animation clock
+            if (modelStep != 0)   // model transitions: 1/fps per drawn frame instead of 1/30
+            {
+                Write(pi.hProcess, (uint)mem + 0x10, BitConverter.GetBytes(1f / fps));
+                Redirect(pi.hProcess, new List<uint> { modelStep }, (uint)mem + 0x10);
+            }
             if (throttlePfx && pfxSite != 0)
                 ThrottleParticles(pi.hProcess, pfxSite, pfxSim, (uint)mem, (uint)mem + 8, (uint)mem + 0x40);
             FlushInstructionCache(pi.hProcess, IntPtr.Zero, UIntPtr.Zero);
@@ -213,6 +251,7 @@ static class Program
     {
         readonly ComboBox fpsBox = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList };
         readonly CheckedListBox gameList = new CheckedListBox { CheckOnClick = true, IntegralHeight = false, BorderStyle = BorderStyle.FixedSingle };
+        readonly CheckBox menuBox = new CheckBox { Text = "Show a mod && version picker when the game starts", AutoSize = true };
         List<Tuple<string, string>> games;
 
         public SetupForm()
@@ -237,10 +276,10 @@ static class Program
             Controls.Add(new Label { Text = "Install C&C FPS Unlocker", AutoSize = true, Location = new Point(20, 106),
                                      Font = new Font(Font, FontStyle.Bold), UseMnemonic = false });
             Controls.Add(new Label { AutoSize = true, Location = new Point(20, 132), UseMnemonic = false,
-                                     Text = games.Count > 0 ? "Install for these games:" : "No supported games found (Steam versions of RA3, C&C3, Kane's Wrath)." });
+                                     Text = games.Count > 0 ? "Install for these games:" : "No games found automatically. Use \"Add game folder...\" below." });
 
             var tips = new ToolTip();
-            int listH = Math.Max(1, games.Count) * 20 + 6;
+            int listH = Math.Max(3, games.Count) * 20 + 6;
             gameList.Bounds = new Rectangle(20, 152, 460, listH);
             foreach (var g in games) gameList.Items.Add(g.Item1, true);
             Controls.Add(gameList);
@@ -263,7 +302,10 @@ static class Program
             Controls.Add(new Label { AutoSize = true, Location = new Point(210, y + 4), ForeColor = SystemColors.GrayText,
                                      Text = "(your monitor: " + MonitorHz() + " Hz)" });
 
-            y += 40;
+            menuBox.Location = new Point(20, y + 36);
+            menuBox.Checked = games.Any(g => ReadIni(IniPath(g.Item2), "menu") == "on");
+            Controls.Add(menuBox);
+            y += 70;
             Controls.Add(Line(y));
             var install = new Button { Text = "Install", Bounds = new Rectangle(324, y + 13, 75, 23), Enabled = games.Count > 0 };
             var cancel = new Button { Text = "Cancel", Bounds = new Rectangle(405, y + 13, 75, 23) };
@@ -296,7 +338,9 @@ static class Program
                     string target = Path.Combine(dir, "RA3HighFps.exe");
                     if (!string.Equals(Path.GetFullPath(Application.ExecutablePath), Path.GetFullPath(target), StringComparison.OrdinalIgnoreCase))
                         File.Copy(Application.ExecutablePath, target, true);
-                    File.WriteAllLines(IniPath(dir), new[] { "; C&C FPS Unlocker settings (multiple of 15, 30-240)", "fps=" + SelectedFps() });
+                    if (!File.Exists(IniPath(dir))) File.WriteAllLines(IniPath(dir), new[] { "; C&C FPS Unlocker settings (fps: multiple of 15, 30-240; menu: on/off)" });
+                    SetIni(IniPath(dir), "fps", SelectedFps().ToString());
+                    SetIni(IniPath(dir), "menu", menuBox.Checked ? "on" : "off");
                     done.Add(Tuple.Create(games[i].Item1, "\"" + target + "\" %command%"));
                 }
             }
@@ -358,6 +402,152 @@ static class Program
         }
     }
 
+    // Shown on launch when menu=on (or --menu): pick a mod and game version, like the old
+    // -ui launcher window. Remembers the last choice in the ini.
+    class MenuForm : Form
+    {
+        readonly ComboBox modBox = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList };
+        readonly ComboBox verBox = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList };
+        readonly List<string> modPaths = new List<string> { null };   // index 0 = no mod
+        public string ModConfig { get { return modPaths[modBox.SelectedIndex]; } }
+        // -1 = Auto: the newest version, or the one the chosen mod asks for (mod-game 1.N)
+        public int Version { get { string v = (string)verBox.SelectedItem; return v == "Auto" ? -1 : int.Parse(v.Split('.')[1]); } }
+
+        public MenuForm(string game, string lang)
+        {
+            Text = "C&C FPS Unlocker";
+            AutoScaleDimensions = new SizeF(96f, 96f);
+            AutoScaleMode = AutoScaleMode.Dpi;
+            Font = SystemFonts.MessageBoxFont;
+            FormBorderStyle = FormBorderStyle.FixedDialog;
+            MaximizeBox = MinimizeBox = false;
+            ShowIcon = false;
+            StartPosition = FormStartPosition.CenterScreen;
+            ClientSize = new Size(420, 170);
+            string ini = IniPath(game);
+
+            Controls.Add(new Label { Text = GameName(game), AutoSize = true, Location = new Point(20, 16),
+                                     Font = new Font(Font, FontStyle.Bold), UseMnemonic = false });
+
+            Controls.Add(new Label { Text = "Mod:", AutoSize = true, Location = new Point(20, 52) });
+            modBox.Items.Add("No mod");
+            foreach (var m in FindMods(game)) { modBox.Items.Add(m.Item1); modPaths.Add(m.Item2); }
+            string lastMod = ReadIni(ini, "menu_mod");
+            if (lastMod != null && File.Exists(lastMod) && !modPaths.Contains(lastMod))
+            { modBox.Items.Add(Path.GetFileNameWithoutExtension(lastMod)); modPaths.Add(lastMod); }
+            modBox.SelectedIndex = Math.Max(0, modPaths.IndexOf(lastMod));
+            modBox.Bounds = new Rectangle(90, 48, 220, 23);
+            var browse = new Button { Text = "Browse...", Bounds = new Rectangle(318, 47, 82, 25) };
+            browse.Click += (s, e) =>
+            {
+                using (var d = new OpenFileDialog { Filter = "Mod config (*.skudef)|*.skudef", Title = "Pick a mod's .skudef file" })
+                    if (d.ShowDialog(this) == DialogResult.OK)
+                    {
+                        int i = modPaths.IndexOf(d.FileName);
+                        if (i < 0) { modBox.Items.Add(Path.GetFileNameWithoutExtension(d.FileName)); modPaths.Add(d.FileName); i = modPaths.Count - 1; }
+                        modBox.SelectedIndex = i;
+                    }
+            };
+            Controls.AddRange(new Control[] { modBox, browse });
+
+            Controls.Add(new Label { Text = "Version:", AutoSize = true, Location = new Point(20, 88) });
+            verBox.Items.Add("Auto");
+            foreach (int v in SkuVersions(game, lang)) verBox.Items.Add("1." + v);
+            string lastVer = ReadIni(ini, "menu_ver");
+            verBox.SelectedItem = lastVer == null || lastVer == "-1" ? "Auto" : "1." + lastVer;
+            if (verBox.SelectedIndex < 0 && verBox.Items.Count > 0) verBox.SelectedIndex = 0;
+            verBox.Bounds = new Rectangle(90, 84, 90, 23);
+            Controls.Add(verBox);
+
+            Controls.Add(new Label { BorderStyle = BorderStyle.Fixed3D, Bounds = new Rectangle(0, 122, 420, 2) });
+            var play = new Button { Text = "Play", Bounds = new Rectangle(244, 134, 75, 23) };
+            var cancel = new Button { Text = "Cancel", Bounds = new Rectangle(325, 134, 75, 23) };
+            play.Click += (s, e) =>
+            {
+                SetIni(ini, "menu_mod", ModConfig ?? "");
+                SetIni(ini, "menu_ver", Version.ToString());
+                DialogResult = DialogResult.OK;
+            };
+            cancel.Click += (s, e) => { DialogResult = DialogResult.Cancel; };
+            Controls.AddRange(new Control[] { play, cancel });
+            AcceptButton = play;
+            CancelButton = cancel;
+        }
+    }
+
+    // Display name for a game folder, from the Games table.
+    static string GameName(string game)
+    {
+        string leaf = Path.GetFileName(Path.GetFullPath(game).TrimEnd('\\'));
+        var g = Games.FirstOrDefault(x => string.Equals(x[0], leaf, StringComparison.OrdinalIgnoreCase));
+        return g != null ? g[1] : leaf;
+    }
+
+    // Game versions (1.N) that have a SkuDef in the chosen language, newest first.
+    static List<int> SkuVersions(string game, string lang)
+    {
+        string newest = LatestSkuDef(game, lang);
+        string prefix = Regex.Replace(Path.GetFileName(newest), @"_1\.\d+\.SkuDef$", "", RegexOptions.IgnoreCase);
+        return Directory.GetFiles(game, prefix + "_1.*.SkuDef")
+            .Select(f => Regex.Match(Path.GetFileName(f), @"_1\.(\d+)\.SkuDef$", RegexOptions.IgnoreCase))
+            .Where(m => m.Success).Select(m => int.Parse(m.Groups[1].Value))
+            .OrderByDescending(v => v).ToList();
+    }
+
+    // Mods in Documents\<game's user data folder>\Mods\<Mod>\*.skudef (newest skudef per mod),
+    // which is where the stock launcher looks.
+    static List<Tuple<string, string>> FindMods(string game)
+    {
+        var mods = new List<Tuple<string, string>>();
+        foreach (string leaf in UserDataFolders(game))
+        {
+            string dir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments), leaf, "Mods");
+            if (!Directory.Exists(dir)) continue;
+            foreach (string mod in Directory.GetDirectories(dir))
+            {
+                string sku = Directory.GetFiles(mod, "*.skudef").OrderByDescending(f => f, StringComparer.OrdinalIgnoreCase).FirstOrDefault();
+                if (sku != null) mods.Add(Tuple.Create(Path.GetFileName(mod), sku));
+            }
+        }
+        return mods;
+    }
+
+    // The game's folder name under Documents: the registry's UserDataLeafName, else the usual names.
+    static List<string> UserDataFolders(string game)
+    {
+        var names = new List<string>();
+        string target = Path.GetFullPath(game).TrimEnd('\\');
+        try
+        {
+            using (var ea = Registry.LocalMachine.OpenSubKey(@"SOFTWARE\WOW6432Node\Electronic Arts\Electronic Arts"))
+                if (ea != null)
+                    foreach (string name in ea.GetSubKeyNames())
+                        using (var k = ea.OpenSubKey(name))
+                        {
+                            string dir = (k.GetValue("Install Dir") ?? k.GetValue("installpath") ?? k.GetValue("InstallPath")) as string;
+                            string leaf = k.GetValue("UserDataLeafName") as string;
+                            if (dir != null && leaf != null && string.Equals(Path.GetFullPath(dir).TrimEnd('\\'), target, StringComparison.OrdinalIgnoreCase))
+                                names.Add(leaf);
+                        }
+        }
+        catch { }
+        string gname = GameName(game);
+        if (gname == "Red Alert 3") names.Add("Red Alert 3");
+        if (gname == "Red Alert 3 Uprising") names.Add("Red Alert 3 Uprising");
+        if (gname == "Tiberium Wars") names.Add("Command & Conquer 3 Tiberium Wars");
+        if (gname == "Kane's Wrath") names.Add("Command & Conquer 3 Kane's Wrath");
+        return names.Distinct(StringComparer.OrdinalIgnoreCase).ToList();
+    }
+
+    // Set key=value in the ini, keeping the other lines.
+    static void SetIni(string ini, string key, string value)
+    {
+        var lines = File.Exists(ini) ? File.ReadAllLines(ini).ToList() : new List<string>();
+        int i = lines.FindIndex(l => Regex.IsMatch(l, @"^\s*" + key + @"\s*=", RegexOptions.IgnoreCase));
+        if (i >= 0) lines[i] = key + "=" + value; else lines.Add(key + "=" + value);
+        File.WriteAllLines(ini, lines);
+    }
+
     static string IniPath(string game) { return Path.Combine(game, "RA3HighFps.ini"); }
 
     // Current refresh rate of the main display (falls back to 60).
@@ -397,8 +587,8 @@ static class Program
         if (!File.Exists(ini)) return null;
         foreach (string line in File.ReadAllLines(ini))
         {
-            var m = Regex.Match(line, @"^\s*" + key + @"\s*=\s*(\S+)", RegexOptions.IgnoreCase);
-            if (m.Success) return m.Groups[1].Value;
+            var m = Regex.Match(line, @"^\s*" + key + @"\s*=\s*(.*?)\s*$", RegexOptions.IgnoreCase);   // whole value: paths have spaces
+            if (m.Success && m.Groups[1].Value.Length > 0) return m.Groups[1].Value;
         }
         return null;
     }
@@ -434,7 +624,48 @@ static class Program
                 string p = Path.Combine(l, @"steamapps\common", g[0]);
                 if (IsGameFolder(p)) { found.Add(Tuple.Create(g[1], p)); break; }
             }
+
+        // EA app / Origin / retail installs register their folder under EA's registry keys.
+        foreach (string root in new[] { @"SOFTWARE\WOW6432Node\Electronic Arts\Electronic Arts", @"SOFTWARE\WOW6432Node\Electronic Arts",
+                                        @"SOFTWARE\WOW6432Node\EA Games", @"SOFTWARE\Electronic Arts\Electronic Arts" })
+        {
+            try
+            {
+                using (var ea = Registry.LocalMachine.OpenSubKey(root))
+                {
+                    if (ea == null) continue;
+                    foreach (string name in ea.GetSubKeyNames())
+                        using (var k = ea.OpenSubKey(name))
+                        {
+                            string dir = (k.GetValue("Install Dir") ?? k.GetValue("installpath") ?? k.GetValue("InstallPath")) as string;
+                            if (dir == null || !IsGameFolder(dir)) continue;
+                            string full = Path.GetFullPath(dir).TrimEnd('\\');
+                            if (found.Any(f => string.Equals(Path.GetFullPath(f.Item2).TrimEnd('\\'), full, StringComparison.OrdinalIgnoreCase))) continue;
+                            string label = (k.GetValue("ProductName") ?? k.GetValue("displayname") ?? name) as string;
+                            found.Add(Tuple.Create(label.Replace("Command & Conquer ", "") + " (EA app)", full));
+                        }
+                }
+            }
+            catch { }
+        }
         return found;
+    }
+
+    static bool IsSteamInstall(string dir) { return dir.IndexOf(@"\steamapps\common\", StringComparison.OrdinalIgnoreCase) >= 0; }
+
+    // Desktop shortcut that runs the unlocker in a (non-Steam) game folder with --play.
+    static string MakeShortcut(string exe, string name)
+    {
+        string lnk = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.DesktopDirectory), name + " (FPS Unlocker).lnk");
+        var shellType = Type.GetTypeFromProgID("WScript.Shell");
+        dynamic shell = Activator.CreateInstance(shellType);
+        dynamic s = shell.CreateShortcut(lnk);
+        s.TargetPath = exe;
+        s.Arguments = "--play";
+        s.WorkingDirectory = Path.GetDirectoryName(exe);
+        s.IconLocation = exe + ",0";
+        s.Save();
+        return lnk;
     }
 
     static bool IsGameFolder(string dir)
@@ -650,6 +881,149 @@ static class Program
             for (int k = a; k <= b && k < all.Count; k++) pick.Add(all[k]);
         }
         return pick;
+    }
+
+    // Scripted model transitions (e.g. Soviet/Empire building unfold / build-up) advance a
+    // 0..1 timer by the shared 1/30 s constant once per drawn frame:
+    //     call [GameClient]->getFrame / movss xmm0,[obj+x] / addss xmm0,[1/30f]
+    // At 120 fps that plays them 4x too fast. Returns the VA of the addss operand (only that
+    // read moves to 1/fps; the shared constant has other users, e.g. pathfinding), or 0.
+    // Credit: identified in CNCStuff/cnc3_fps_patch ("scripted-model transition step").
+    static uint FindModelTransitionStep(byte[] img)
+    {
+        int end = TextEnd(img);
+        uint hit = 0; int count = 0;
+        for (int i = 0x1010; i < end - 8; i++)
+        {
+            if (img[i] != 0xF3 || img[i + 1] != 0x0F || img[i + 2] != 0x58 || img[i + 3] != 0x05) continue;   // addss xmm0,[m32]
+            uint addr = BitConverter.ToUInt32(img, i + 4);
+            int off = (int)(addr - ImageBase);
+            if (off < 0 || off + 4 > img.Length || BitConverter.ToUInt32(img, off) != 0x3D088889) continue;    // 1/30f
+            if (img[i - 8] != 0xF3 || img[i - 7] != 0x0F || img[i - 6] != 0x10) continue;                        // movss xmm0,[reg+disp32]
+            if (!(img[i - 10] == 0xFF && img[i - 9] == 0xD0) && !(img[i - 11] == 0xFF && img[i - 10] == 0x50)) continue;  // call eax / call [eax+x]
+            hit = ImageBase + (uint)i + 4; count++;
+        }
+        return count == 1 ? hit : 0;
+    }
+
+    // Anim2D (2D sprite animations, e.g. the construction progress sprites) picks the next
+    // frame when `getFrame() - [anim+8] >= [anim+18h]`, i.e. it counts drawn frames and its
+    // intervals are authored for 30 fps. All reads of getFrame() that feed [anim+8] must use
+    // the same clock, so every `mov reg,[reg+74h] / call reg` followed by `mov [esi+8],eax`
+    // or `sub eax,[esi+8] / cmp eax,[esi+18h]` is switched to a 30 Hz frame number.
+    // Credit: identified in CNCStuff/cnc3_fps_patch (Anim2D frame reads).
+    static List<uint> FindAnim2DFrameReads(byte[] img)
+    {
+        int end = TextEnd(img);
+        var list = new List<uint>();
+        for (int i = 0x1000; i < end - 16; i++)
+        {
+            // 8B 4x 74 = mov r32,[r32+74h] ; [83 C4 xx = add esp,imm8] ; FF Dx = call r32 (same register)
+            if (img[i] != 0x8B || (img[i + 1] & 0xC0) != 0x40 || img[i + 2] != 0x74) continue;
+            int dst = (img[i + 1] >> 3) & 7;
+            int c = i + 3;
+            if (img[c] == 0x83 && img[c + 1] == 0xC4) c += 3;
+            if (img[c] != 0xFF || img[c + 1] != (0xD0 | dst)) continue;
+            int n = c + 2;
+            bool set = img[n] == 0x89 && img[n + 1] == 0x46 && img[n + 2] == 0x08;                                  // mov [esi+8],eax
+            bool upd = img[n] == 0x2B && img[n + 1] == 0x46 && img[n + 2] == 0x08 && img[n + 3] == 0x3B && img[n + 4] == 0x46 && img[n + 5] == 0x18;
+            if (set || upd) list.Add(ImageBase + (uint)i);
+        }
+        return list;
+    }
+
+    // Stub: eax = ceil(GameClient->getFrame() * 30 / fps). ecx is the GameClient, as at the call site.
+    static void PatchAnim2D(IntPtr proc, byte[] img, List<uint> sites, uint fpsVa, uint stubVa)
+    {
+        var s = new List<byte>();
+        Func<uint, byte[]> u = BitConverter.GetBytes;
+        s.AddRange(new byte[] { 0x8B, 0x01, 0xFF, 0x50, 0x74 });              // mov eax,[ecx] / call [eax+74h]
+        s.AddRange(new byte[] { 0x6B, 0xC0, 0x1E });                          // imul eax,eax,30
+        s.AddRange(new byte[] { 0x8B, 0x15 }); s.AddRange(u(fpsVa));          // mov edx,[fps]
+        s.AddRange(new byte[] { 0x8D, 0x44, 0x10, 0xFF });                    // lea eax,[eax+edx-1]
+        s.AddRange(new byte[] { 0x33, 0xD2 });                                // xor edx,edx
+        s.AddRange(new byte[] { 0xF7, 0x35 }); s.AddRange(u(fpsVa));          // div dword [fps]
+        s.Add(0xC3);                                                          // ret
+        Write(proc, stubVa, s.ToArray());
+        foreach (uint site in sites)
+        {
+            // `mov r,[r+74h] / call r` (5 bytes) -> `call stub`;
+            // `mov r,[r+74h] / add esp,xx / call r` (8 bytes) -> `add esp,xx / call stub`.
+            int o = (int)(site - ImageBase);
+            var code = new List<byte>();
+            if (img[o + 3] == 0x83 && img[o + 4] == 0xC4) code.AddRange(new byte[] { 0x83, 0xC4, img[o + 5] });
+            code.Add(0xE8);
+            code.AddRange(u(stubVa - (site + (uint)code.Count + 4)));
+            uint old;
+            if (!VirtualProtectEx(proc, (IntPtr)site, (UIntPtr)code.Count, PAGE_EXECUTE_READWRITE, out old))
+                throw new Exception("VirtualProtectEx failed.");
+            Write(proc, site, code.ToArray());
+            VirtualProtectEx(proc, (IntPtr)site, (UIntPtr)code.Count, old, out old);
+        }
+    }
+
+    // Soviet/Empire build-up (StructureUnpackUpdate progress, used for both the rising model and the
+    // on-building bar) converts the build's start tick and duration to 30 fps client frames
+    // (tick / 15 * 1000 * framesPerMs), then measures "now" with GameClient::getFrame(), the real
+    // drawn-frame count. At 120 fps "now" runs 4x ahead of the start stamp, so the build looks done
+    // at once. Both getFrame reads are switched to the current logic tick put through the same
+    // conversion, which is what the drawn-frame count equals at stock 30 fps.
+    const string UnpackPattern =
+        "8B 35 ?? ?? ?? ?? 8B 57 3C D9 86 BC 01 00 00 55 D9 5C 24 14 52 8B CE E8 ?? ?? ?? ?? D8 0D ?? ?? ?? ?? " +
+        "D9 7C 24 12 8B CE 0F B7 44 24 12 D8 0D ?? ?? ?? ?? 0D 00 0C 00 00 89 44 24 18 8B 47 40 D8 4C 24 14 50 " +
+        "D9 6C 24 1C DF 7C 24 1C 8B 6C 24 1C D9 6C 24 16 E8 ?? ?? ?? ?? D8 0D ?? ?? ?? ?? 8B 4F 38 D9 7C 24 12 " +
+        "0F B7 44 24 12 D8 0D ?? ?? ?? ?? 0D 00 0C 00 00 89 44 24 18 51 D8 4C 24 18 8B CE D9 6C 24 1C DF 7C 24 1C " +
+        "8B 5C 24 1C D9 6C 24 16 E8 ?? ?? ?? ?? D8 0D ?? ?? ?? ?? 8B 0D ?? ?? ?? ?? D9 7C 24 12 0F B7 44 24 12 " +
+        "D8 0D ?? ?? ?? ?? 0D 00 0C 00 00 89 44 24 18 8B 01 D8 4C 24 14 D9 6C 24 18 DF 7C 24 18 8B 54 24 18 " +
+        "89 54 24 14 8B 50 74 D9 6C 24 12 FF D2 8B F0 2B F5 5D 80 7F 45 00 74 22 83 7C 24 24 01 75 0A " +
+        "A1 ?? ?? ?? ?? 8B 40 50 EB 0D 8B 0D ?? ?? ?? ?? 8B 11 8B 42 74 FF D0 2B D8";
+
+    static uint FindUnpackProgress(byte[] img)
+    {
+        int[] pat = UnpackPattern.Split(' ').Select(t => t == "??" ? -1 : Convert.ToInt32(t, 16)).ToArray();
+        int end = TextEnd(img), found = -1;
+        for (int i = 0x1000; i < end - pat.Length; i++)
+        {
+            int j = 0;
+            while (j < pat.Length && (pat[j] < 0 || img[i + j] == pat[j])) j++;
+            if (j < pat.Length) continue;
+            if (found >= 0) return 0;   // not unique: leave it alone
+            found = i;
+        }
+        return found < 0 ? 0 : ImageBase + (uint)found;
+    }
+
+    static void PatchUnpack(IntPtr proc, byte[] img, uint block, uint stubVa)
+    {
+        Func<uint, uint> rd = va => BitConverter.ToUInt32(img, (int)(va - ImageBase));
+        Func<uint, byte[]> u = BitConverter.GetBytes;
+        uint logic = rd(block + 2), conv = block + 0x17 + 5 + rd(block + 0x18), k1000 = rd(block + 0x1E), fpm = rd(block + 0x2F);
+        var s = new List<byte> { 0x51, 0x8B, 0x0D }; s.AddRange(u(logic));   // push ecx / mov ecx,[TheGameLogic]
+        s.AddRange(new byte[] { 0xFF, 0x71, 0x50 });                           // push [ecx+50h]  (current logic frame)
+        s.Add(0xE8); s.AddRange(u(conv - (stubVa + (uint)s.Count + 4)));        // call frames->seconds (ret 4)
+        s.AddRange(new byte[] { 0xD8, 0x0D }); s.AddRange(u(k1000));            // fmul [1000.0]
+        s.AddRange(new byte[] { 0xD8, 0x0D }); s.AddRange(u(fpm));              // fmul [framesPerMs]
+        s.AddRange(new byte[] { 0xD8, 0x89, 0xBC, 0x01, 0x00, 0x00 });          // fmul [ecx+1BCh]  (game speed, as the original)
+        s.AddRange(new byte[] { 0x83, 0xEC, 0x08, 0xD9, 0x3C, 0x24, 0x0F, 0xB7, 0x04, 0x24, 0x0D, 0x00, 0x0C, 0x00, 0x00,
+                                0x89, 0x44, 0x24, 0x04, 0xD9, 0x6C, 0x24, 0x04, 0xDB, 0x5C, 0x24, 0x04, 0xD9, 0x2C, 0x24,
+                                0x8B, 0x44, 0x24, 0x04, 0x83, 0xC4, 0x08 });   // truncate to int (same rounding mode as the original)
+        s.AddRange(new byte[] { 0x59, 0xC3 });                                  // pop ecx / ret
+        Write(proc, stubVa, s.ToArray());
+
+        // site 1: mov edx,[eax+74h] / fldcw [esp+12h] / call edx  ->  fldcw [esp+12h] / call stub
+        uint s1 = block + 0xD0;
+        var p1 = new List<byte> { 0xD9, 0x6C, 0x24, 0x12, 0xE8 }; p1.AddRange(u(stubVa - (s1 + 9)));
+        // site 2: mov ecx,[TheGameClient] / mov edx,[ecx] / mov eax,[edx+74h] / call eax  ->  call stub / nops
+        uint s2 = block + 0xF5;
+        var p2 = new List<byte> { 0xE8 }; p2.AddRange(u(stubVa - (s2 + 5))); p2.AddRange(Enumerable.Repeat((byte)0x90, 8));
+        foreach (var site in new[] { Tuple.Create(s1, p1.ToArray()), Tuple.Create(s2, p2.ToArray()) })
+        {
+            uint old;
+            if (!VirtualProtectEx(proc, (IntPtr)site.Item1, (UIntPtr)site.Item2.Length, PAGE_EXECUTE_READWRITE, out old))
+                throw new Exception("VirtualProtectEx failed.");
+            Write(proc, site.Item1, site.Item2);
+            VirtualProtectEx(proc, (IntPtr)site.Item1, (UIntPtr)site.Item2.Length, old, out old);
+        }
     }
 
     // End of the .text section in the file (raw offset == RVA in these games).

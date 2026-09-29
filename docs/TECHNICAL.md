@@ -64,6 +64,14 @@ The RA3 particle-simulation throttle doesn't find its hook in C&C3 (the particle
 
 The game folder comes from Steam's `%command%` (the first `.exe` argument, e.g. `RA3.exe`, `CNC3.exe` or `CNC3EP1.exe`), and the real exe comes from the newest `*_1.N.SkuDef` in that folder.
 
+## Soviet and Empire construction (RA3)
+
+Soviet and Empire buildings looked finished the moment they were placed, while the real build time still applied. Putting the build on hold showed the right stage, which turned out to be the clue.
+
+The build-up progress lives in `StructureUnpackUpdate` (RA3 1.13 `0x71FE90`). It converts the build's start tick and duration to client frames using the 30 fps convention (`tick / 15 * 1000 * framesPerMs`, with `framesPerMs` fixed at 0.03), then measures "now" with `GameClient::getFrame()`, the real drawn-frame count. At 120 fps "now" is four times bigger than the start stamp, so progress is clamped to 100% on the first frame. On hold it takes a different branch that uses logic frames only, hence the correct stage. Same kind of bug as the particle flicker: two clocks that only agree at 30 fps.
+
+The fix replaces both `getFrame()` reads in that function with the current logic frame run through the exact same conversion, so both sides are in the same units. The rising model (W3D animation mode at `0x937DCF`, frame = progress x last frame) and the bar on the building both read this progress, so both are fixed. Found by a masked byte pattern: `0x71FED6` in 1.13 and `0x735116` in 1.12.
+
 ## Known leftovers
 
 - Particles simulate at 30 Hz (like stock), so smoke motion is a little less smooth than units. Try `--pfx off` if you want to experiment.
