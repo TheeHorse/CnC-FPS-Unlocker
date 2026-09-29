@@ -1,6 +1,6 @@
 # How it works
 
-Notes for anyone who wants to build on this (hi C&C:Online folks). Addresses are for the current Steam `RA3_1.13.game` (EA's 2025 rebuild, PE timestamp `0x67B7A95B`). Everything gets found by byte pattern so small updates might still work, run it with `--check` to see.
+Notes for anyone who wants to build on this. Addresses are for the current Steam `RA3_1.13.game` (EA's 2025 rebuild, PE timestamp `0x67B7A95B`). Everything gets found by byte pattern so small updates might still work, run it with `--check` to see.
 
 ## Basics
 
