@@ -33,8 +33,13 @@ static class Program
     {
         try
         {
-            // Double-clicked with no arguments -> show the setup window instead of launching.
-            if (argv.Length == 0)
+            // Double-clicked with no arguments: a copy sitting in a game folder next to its
+            // RA3HighFps.ini (portable use, non-Steam) starts the game; anywhere else it opens
+            // the setup window. --setup always opens the setup.
+            string here = AppDomain.CurrentDomain.BaseDirectory;
+            bool portable = argv.Length == 0 && IsGameFolder(here) && File.Exists(Path.Combine(here, "RA3HighFps.ini"));
+            if (portable) return Run(argv);
+            if (argv.Length == 0 || (argv.Length == 1 && argv[0] == "--setup"))
             {
                 SetProcessDPIAware();  // crisp text on scaled displays
                 Application.EnableVisualStyles();
