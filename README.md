@@ -47,7 +47,6 @@ Before v1.6 that wasn't true. RA3 ran about 33% fast at 120 and way faster at 24
 - **240 fps is experimental** until it's been tested more, some people have had problems with it. If you're on a 240hz monitor and something's weird try 165 or 120
 - Some effects still play too fast (like the RA3 power plant fog) and the TW/KW Ion Cannon hit looks off ([#4](../../issues/4), [#5](../../issues/5))
 
-For what it's worth the paid SageMetaTool has these too. They're next on my list.
 
 ## Extras
 
