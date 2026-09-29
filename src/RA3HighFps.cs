@@ -1351,10 +1351,10 @@ static class Program
         a.E(0x81, 0xFA); a.D(400); a.J(0x7E, "pass");
         a.E(0xA3); a.D(t0); a.J(0xEB, "pass");
         a.L("mid");
-        // phases due = 1 + ceil(t * 6 / 200), capped at 6
+        // phases due = 1 + floor(t * 6 / 200), capped at 6: phase k runs once (k-1)/6 of the tick has passed, as in stock timing
         a.E(0x8D, 0x04, 0x52, 0x85, 0xC0); a.J(0x7D, "pos"); a.E(0x33, 0xC0);
         a.L("pos");
-        a.E(0x83, 0xC0, 0x63, 0x33, 0xD2, 0x51, 0xB9, 0x64, 0, 0, 0, 0xF7, 0xF1, 0x59, 0x40);
+        a.E(0x33, 0xD2, 0x51, 0xB9, 0x64, 0, 0, 0, 0xF7, 0xF1, 0x59, 0x40);
         a.E(0x83, 0xF8, 0x06); a.J(0x76, "cap"); a.E(0xB8, 6, 0, 0, 0);
         a.L("cap");
         a.E(0x3B, 0xC1); a.J(0x76, "idle");                          // nothing due this frame
@@ -1370,8 +1370,10 @@ static class Program
 
         // Stub B, called in place of `mov ecx,[global]` at the exit: interpolation = time fraction of the tick.
         var b = new Asm(stubB);
+        // Interpolation = t/200 + 1/6: after phase k it reads k/6, like the stock engine, but moves every frame.
         b.E(0x50);
         b.E(0xA1); b.D(now3); b.E(0x2B, 0x05); b.D(t0);
+        b.E(0x83, 0xC0, 0x21);                                        // + 33 units (one phase)
         b.E(0x85, 0xC0); b.J(0x7D, "b1"); b.E(0x33, 0xC0);
         b.L("b1");
         b.E(0x3D); b.D(200); b.J(0x7E, "b2"); b.E(0xB8); b.D(200);

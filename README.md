@@ -32,6 +32,11 @@ Before v1.6 this wasn't the case: RA3 ran about 33% fast at 120 and much faster 
 
 For what it's worth, the paid SageMetaTool has these too. They're next on my list.
 
+## Extras
+
+The setup has an **Extras...** button for things that aren't about frame rate. They're all off unless you turn them on.
+
+- **Camera zoom-out (Red Alert 3):** lets the camera zoom out further (1.25x, 1.5x or 1.75x the normal limit). It only works in skirmish and campaign; online and LAN games always use the normal zoom, so nobody gets an advantage. Going much past 1.75x makes the ground stop drawing at the top of the screen, which is why that's the max for now.
 ## Is it safe?
 
 - It doesn't modify any game files. It starts the normal game, changes a few timing values in memory while it's starting up, and that's it.
@@ -88,6 +93,6 @@ Put these in the Steam launch options, before `%command%`:
 - [apitrace](https://github.com/apitrace/apitrace), which made it possible to find the flicker.
 - Not affiliated with EA or C&C:Online. Command & Conquer, Red Alert and Tiberium are trademarks of Electronic Arts.
 
-Licensed under the GNU GPL v3 (see LICENSE): you're free to use, share and change it, but anything built from this code has to stay open source under the same license and keep the credit. Versions up to v1.6 were released under MIT.
+Licensed under the GNU GPL v3 (see LICENSE): you're free to use, share and change it, but anything built from this code has to stay open source under the same license and keep the credit. Versions up to v1.5 were released under MIT.
 
 — TheeHorse

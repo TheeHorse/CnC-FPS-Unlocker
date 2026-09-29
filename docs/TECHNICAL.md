@@ -82,8 +82,8 @@ The per-frame engine update (RA3 1.13 `0x62B920`, TW `0x54B0CE`) is hooked at tw
 
 - time is kept in 1/3 ms units so a tick is exactly 200 units and nothing drifts;
 - a new tick starts once 66.67 ms have passed since the last one. If the network holds a tick back, the engine reverts the phase and the hook notices on the next frame and retries every frame, like stock. More than two ticks behind, it resyncs instead of spiralling;
-- each frame every phase that's due by the clock runs (`1 + ceil(t * 6 / 200)`): on a fast PC some frames run none, on a slow one the hook dispatches the extra phases itself through the engine's phase dispatcher (vtable `+90h` in RA3, `+94h` in C&C3) and lets the original code run the last one. Phase 1 still gets exactly one frame, so the network code that runs at tick boundaries runs once per tick;
-- the tick-interpolation value drawables blend with (`[engine+60h]` in RA3, `+48h` in C&C3) is set to the time fraction of the tick every frame, so movement stays smooth at any frame rate.
+- each frame every phase that's due by the clock runs (`1 + floor(t * 6 / 200)`, so phase k runs once (k-1)/6 of the tick has passed, the same spacing the stock engine uses): on a fast PC some frames run none, on a slow one the hook dispatches the extra phases itself through the engine's phase dispatcher (vtable `+90h` in RA3, `+94h` in C&C3) and lets the original code run the last one;
+- the tick-interpolation value drawables blend with (`[engine+60h]` in RA3, `+48h` in C&C3) is set every frame to `t / 200 + 1/6` (capped at 1). After phase k that's k/6, which is what the stock engine uses, but it keeps moving on frames where no phase runs. Each phase updates a slice of the objects, and at 120 fps six phases can't be spread evenly over eight frames, so a very slight unevenness remains; at frame rates where fps/15 is a multiple of 6 (90, 180) it's perfectly even. An earlier version rounded the phase times up and used plain `t / 200`, which made units visibly hitch and sometimes look stuck.
 
 This runs at every frame rate. Below 90 the stock engine batched phases itself (and ran a little slow, e.g. Kane's Wrath at 60 fps: 14.65 ticks/s), so the two places that compute `fps / logic` and compare it with 6 (the phase dispatcher and the tick-boundary check) read `max(fps, 90)` instead, which keeps them in one-phase-per-call mode and leaves the batching to the clock. Measured after the fix: RA3 14.99 ticks/s at 120 and 15.00 at 60, Tiberium Wars 15.00 at 120 (on the same laptop that gave 10.5 before), Kane's Wrath 15.00 at 120 and at 60.
 The frame limiter also truncated its per-frame budget to whole milliseconds (`trunc(66.67 / R)`): 8 ms at 120 fps is really 125 fps, about 4% fast (same at 60 and 240; 90 and stock 30 are about 1% fast). It now carries the dropped fraction into the next frame (8, 8, 9, ...). The same fix is applied to Tiberium Wars and Kane's Wrath, where the limiter calls `_ftol` instead (that block was found by CNCStuff/cnc3_fps_patch).
@@ -95,6 +95,10 @@ Edge scrolling, arrow keys and right-drag scrolling each add a step every drawn 
 ## Fades (RA3)
 
 Drawables that fade in or out (dying units, cloaking, some effect objects) get the fade length in client frames via `ms * framesPerMs` (30 fps units), but stamp the start and measure progress with `GameClient::getFrame()`, the real drawn-frame count. At 120 fps fades finished four times early. The five places that touch that clock (the fade setters at `0x543AC0`/`0x543B20`, two more that restamp `[obj+338h]`, and the per-frame update at `0x557F70`) now get `ceil(getFrame * 30 / fps)` instead, the same 30 Hz frame number the Anim2D fix uses.
+
+## Camera zoom-out extra (RA3)
+
+The view's `setZoom` (`0x616BE0` in 1.13) clamps the zoom between two values it asks a small "camera limits" object for (`[view+26FCh]`; min 350 and max 550 on stock maps). The call that fetches the maximum (`0x616C8E`) goes through a wrapper that multiplies the result by the `zoom` factor from the ini, but only while there's no network object (`[0xCECF3C]` is null in skirmish and campaign and set in online/LAN games). Past about 1.75x the terrain renderer's drawing window becomes visible at the top of the screen (the ground stops in a straight line while objects still draw), so the setup offers up to 1.75x.
 
 ## Known leftovers
 
