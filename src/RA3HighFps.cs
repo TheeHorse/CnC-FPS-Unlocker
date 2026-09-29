@@ -175,6 +175,7 @@ static class Program
     internal static int InProcess(string dir)
     {
         string ini = Path.Combine(dir, "RA3HighFps.ini");
+        byte[] img = null;
         try
         {
             int fps = ReadIniFps(ini, 120);
@@ -182,7 +183,7 @@ static class Program
             float zoom; if (!float.TryParse(ReadIni(ini, "zoom"), System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out zoom) || zoom < 1f || zoom > 3f) zoom = 1f;
             int hz = MonitorHz();
             if (hz >= 30 && fps > hz / 15 * 15) fps = Math.Max(30, hz / 15 * 15);
-            byte[] img = File.ReadAllBytes(Process.GetCurrentProcess().MainModule.FileName);
+            img = File.ReadAllBytes(Process.GetCurrentProcess().MainModule.FileName);
             IntPtr self = Process.GetCurrentProcess().Handle;
             // launcher already got it (steam launch option too)
             uint render = FindRenderFps(img);
@@ -199,9 +200,50 @@ static class Program
         }
         catch (Exception e)
         {
-            try { File.WriteAllText(Path.Combine(Path.GetTempPath(), "RA3HighFps.log"), DateTime.Now + "  drop-in DLL failed: " + e + "\r\n"); } catch { }
+            string report = "";
+            try { if (img != null) report = BuildReport(img); } catch (Exception re) { report = "report failed: " + re.Message; }
+            try { File.WriteAllText(Path.Combine(Path.GetTempPath(), "RA3HighFps.log"), DateTime.Now + "  drop-in DLL failed: " + e + "\r\n\r\n" + report); } catch { }
             return 0;
         }
+    }
+
+    // for unknown builds: exe info, sections, and the bytes around every render/logic fps read
+    static string BuildReport(byte[] img)
+    {
+        var sb = new StringBuilder();
+        string exe = Process.GetCurrentProcess().MainModule.FileName;
+        int pe = BitConverter.ToInt32(img, 0x3C), n = BitConverter.ToUInt16(img, pe + 6), opt = pe + 24;
+        int secs = opt + BitConverter.ToUInt16(img, pe + 20);
+        sb.AppendFormat("exe {0}\r\nsize {1}  timestamp 0x{2:X8}  entry 0x{3:X}\r\n", exe, img.Length,
+            BitConverter.ToUInt32(img, pe + 8), BitConverter.ToUInt32(img, opt + 16));
+        for (int i = 0; i < n; i++)
+        {
+            int s = secs + i * 40;
+            sb.AppendFormat("section {0,-8} va 0x{1:X} vsize 0x{2:X} raw 0x{3:X} rawsize 0x{4:X}\r\n",
+                Encoding.ASCII.GetString(img, s, 8).TrimEnd('\0'), BitConverter.ToUInt32(img, s + 12),
+                BitConverter.ToUInt32(img, s + 8), BitConverter.ToUInt32(img, s + 20), BitConverter.ToUInt32(img, s + 16));
+        }
+        var hits = Scan(img, FrameMsSig);
+        sb.AppendFormat("limiter matches: {0}\r\n", hits.Count);
+        if (hits.Count != 1) return sb.ToString();
+        uint r = BitConverter.ToUInt32(img, hits[0] + 9), l = r - 4;
+        int ro = (int)(r - ImageBase);
+        sb.AppendFormat("render @0x{0:X} (file value {1}), logic @0x{2:X}\r\n",
+            r, ro >= 0 && ro + 4 <= img.Length ? BitConverter.ToInt32(img, ro).ToString() : "?", l);
+        int end = TextEnd(img);
+        foreach (uint target in new[] { r, l })
+        {
+            byte[] t = BitConverter.GetBytes(target);
+            int count = 0;
+            for (int i = 0x1010; i < end - 32 && count < 300; i++)
+            {
+                if (img[i] != t[0] || img[i + 1] != t[1] || img[i + 2] != t[2] || img[i + 3] != t[3]) continue;
+                sb.AppendFormat("{0} 0x{1:X}: {2} | {3}\r\n", target == r ? "R" : "L", ImageBase + (uint)i,
+                    Hex(img, i - 12, 12), Hex(img, i, 28));
+                count++;
+            }
+        }
+        return sb.ToString();
     }
 
     // proc = suspended game (launcher) or ourselves (dll)

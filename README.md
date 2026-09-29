@@ -30,7 +30,7 @@ For non-Steam copies or if you'd rather just copy files: grab `CnC-FPS-Unlocker-
 | Tiberium Wars (1.10) | `dinput8.dll`, `CnCFpsUnlocker.dll`, `RA3HighFps.ini` | `<TW>\RetailExe\1.10\` |
 | Kane's Wrath (1.3) | `dinput8.dll`, `CnCFpsUnlocker.dll`, `RA3HighFps.ini` | `<KW>\RetailExe\1.3\` |
 
-Then launch the game however you normally do. Settings are in `RA3HighFps.ini`, and to uninstall just delete the dll. The game loads the dll from its own folder, it passes everything through to the real Windows one and does the same fixes as the normal version. Works with Tacitus, and having both this and the Steam launch option is fine, it only patches once. Source is in [`dll/`](dll).
+Then launch the game however you normally do. Settings are in `RA3HighFps.ini` (the zip has ready-made ones for each fps in `FPS presets`), and to uninstall just delete the dll. If it doesn't work on your copy, open an issue with your `%TEMP%RA3HighFps.log`, it has a report that helps me add support. The game loads the dll from its own folder, it passes everything through to the real Windows one and does the same fixes as the normal version. Works with Tacitus, and having both this and the Steam launch option is fine, it only patches once. Source is in [`dll/`](dll).
 
 ## Picking a frame rate
 
