@@ -101,6 +101,7 @@ static class Program
                 string.Join(", ", cs.Select(s => "0x" + s.ToString("X"))), ps, pm);
             report += string.Format("model transition step operand @0x{0:X}\n", FindModelTransitionStep(c));
             report += string.Format("structure build-up block @0x{0:X}\n", FindUnpackProgress(c));
+            report += "fade frame reads: " + string.Join(", ", FindFadeFrameReads(c).Select(s => "0x" + s.ToString("X"))) + "\n";
             uint sbf, sbs = FindScrollBySlot(c, out sbf);
             report += string.Format("camera scrollBy @0x{0:X} (vtable slot 0x{1:X})\n", sbf, sbs);
             uint sa, se; bool sf = FindScheduler(c, out sa, out se);
@@ -162,6 +163,7 @@ static class Program
         bool limiterRA3;
         uint limiter = FindLimiterRounding(img, out limiterRA3);
         uint scrollFunc, scrollSlot = FindScrollBySlot(img, out scrollFunc);
+        List<uint> fades = FindFadeFrameReads(img);
         uint schedAdvance, schedExit;
         bool sched = FindScheduler(img, out schedAdvance, out schedExit);
 
@@ -178,6 +180,7 @@ static class Program
             if (mem == IntPtr.Zero) throw new Exception("VirtualAllocEx failed.");
             Write(pi.hProcess, (uint)mem, BitConverter.GetBytes(fps));
             Redirect(pi.hProcess, sites, (uint)mem);
+            if (fades.Count > 0) PatchFadeFrameReads(pi.hProcess, img, fades, (uint)mem, (uint)mem + 0x440);   // drawable fade timers
             if (scrollSlot != 0 && fps > 30) PatchScrollBy(pi.hProcess, scrollSlot, scrollFunc, fps, (uint)mem + 0x4F0, (uint)mem + 0x4F8, (uint)mem + 0x3C0);   // camera scroll speed
             if (sched) PatchScheduler(pi.hProcess, img, schedAdvance, schedExit, (uint)mem, (uint)mem);   // 15 ticks/s above 90 fps
             if (limiter != 0) PatchLimiterRounding(pi.hProcess, limiter, limiterRA3, (uint)mem + 0x28, (uint)mem + 0x2C, (uint)mem + 0x280);   // exact frame pacing
@@ -1045,6 +1048,54 @@ static class Program
             throw new Exception("VirtualProtectEx failed.");
         Write(proc, site, p.ToArray());
         VirtualProtectEx(proc, (IntPtr)site, (UIntPtr)p.Count, old, out old);
+    }
+
+    // Drawable fade in/out (dying units, stealth, some effect objects) gets its duration in 30 fps
+    // frames (ms * framesPerMs) but stamps and measures time with GameClient::getFrame(), the real
+    // drawn-frame count, so at 120 fps fades finished 4x early. All five reads of that clock (the
+    // setters that stamp [obj+338h] and the per-frame update) are switched to a 30 Hz frame number.
+    static readonly string[] FadeFramePatterns = {
+        "8B 0D ?? ?? ?? ?? 8B 01 8B 50 74 FF D2 89 86 38 03 00 00",
+        "8B 0D ?? ?? ?? ?? 8B 11 8B 42 74 FF D0 89 86 38 03 00 00",
+        "8B 0D ?? ?? ?? ?? 8B 01 8B 50 74 FF D2 8B 96 FC 01 00 00 8B C8 2B 8E 38 03 00 00" };
+
+    static List<uint> FindFadeFrameReads(byte[] img)
+    {
+        var list = new List<uint>();
+        int end = TextEnd(img);
+        foreach (string pattern in FadeFramePatterns)
+        {
+            int[] pat = pattern.Split(' ').Select(t => t == "??" ? -1 : Convert.ToInt32(t, 16)).ToArray();
+            for (int i = 0x1000; i < end - pat.Length; i++)
+            {
+                int j = 0;
+                while (j < pat.Length && (pat[j] < 0 || img[i + j] == pat[j])) j++;
+                if (j == pat.Length) list.Add(ImageBase + (uint)i);
+            }
+        }
+        return list.Count == 5 ? list : new List<uint>();   // exactly the known set, or leave it alone
+    }
+
+    // Each site is `mov ecx,[TheGameClient] / mov r,[ecx] / mov r,[r+74h] / call r` (13 bytes).
+    static void PatchFadeFrameReads(IntPtr proc, byte[] img, List<uint> sites, uint fpsVa, uint stubVa)
+    {
+        Func<uint, byte[]> u = BitConverter.GetBytes;
+        uint client = BitConverter.ToUInt32(img, (int)(sites[0] + 2 - ImageBase));
+        var s = new List<byte> { 0x8B, 0x0D }; s.AddRange(u(client));                 // mov ecx,[TheGameClient]
+        s.AddRange(new byte[] { 0x8B, 0x01, 0xFF, 0x50, 0x74, 0x6B, 0xC0, 0x1E });   // call getFrame / imul eax,30
+        s.AddRange(new byte[] { 0x8B, 0x15 }); s.AddRange(u(fpsVa));                  // mov edx,[fps]
+        s.AddRange(new byte[] { 0x8D, 0x44, 0x10, 0xFF, 0x33, 0xD2, 0xF7, 0x35 }); s.AddRange(u(fpsVa));   // ceil(frame*30/fps)
+        s.Add(0xC3);
+        Write(proc, stubVa, s.ToArray());
+        foreach (uint site in sites)
+        {
+            var p = new List<byte> { 0xE8 }; p.AddRange(u(stubVa - (site + 5))); p.AddRange(Enumerable.Repeat((byte)0x90, 8));
+            uint old;
+            if (!VirtualProtectEx(proc, (IntPtr)site, (UIntPtr)13, PAGE_EXECUTE_READWRITE, out old))
+                throw new Exception("VirtualProtectEx failed.");
+            Write(proc, site, p.ToArray());
+            VirtualProtectEx(proc, (IntPtr)site, (UIntPtr)13, old, out old);
+        }
     }
 
     // Camera scrolling (edge, arrow keys, right-drag) adds a per-frame step, so at 120 fps it

@@ -84,6 +84,10 @@ The frame limiter also truncated its per-frame budget to whole milliseconds (`tr
 
 Edge scrolling, arrow keys and right-drag scrolling each add a step every drawn frame, so at 120 fps the camera scrolled four times as fast. All of them end in the tactical view's `scrollBy(Coord2D*)` (vtable slot `0xC155B8` in 1.13, found by a byte pattern of the function and then its single vtable reference). That slot now points to a small wrapper that multiplies the delta by `30 / fps` and jumps to the original, so the scroll amount the view stores stays consistent too. Same idea as CNCStuff/cnc3_fps_patch's C&C3 camera fix.
 
+## Fades (RA3)
+
+Drawables that fade in or out (dying units, cloaking, some effect objects) get the fade length in client frames via `ms * framesPerMs` (30 fps units), but stamp the start and measure progress with `GameClient::getFrame()`, the real drawn-frame count. At 120 fps fades finished four times early. The five places that touch that clock (the fade setters at `0x543AC0`/`0x543B20`, two more that restamp `[obj+338h]`, and the per-frame update at `0x557F70`) now get `ceil(getFrame * 30 / fps)` instead, the same 30 Hz frame number the Anim2D fix uses.
+
 ## Known leftovers
 
 - Particles simulate at 30 Hz (like stock), so smoke motion is a little less smooth than units. Try `--pfx off` if you want to experiment.
