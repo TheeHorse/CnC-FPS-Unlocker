@@ -1,4 +1,6 @@
-// RA3 High FPS - by TheeHorse
+// C&C FPS Unlocker (RA3 High FPS) - by TheeHorse
+// Copyright (C) 2026 TheeHorse. Licensed under the GNU General Public License v3 or later;
+// see LICENSE. https://github.com/TheeHorse/CnC-FPS-Unlocker
 //
 // Runs Red Alert 3 above 30 fps without touching any game files.
 // It starts the normal game paused, changes the frame-pacing value in memory,
@@ -59,6 +61,7 @@ static class Program
         // Experimental: also update cached "frames per logic tick" copies. ini: ticks=on
         bool ticks = ReadIni(Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "RA3HighFps.ini"), "ticks") == "on";
         bool menu = ReadIni(Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "RA3HighFps.ini"), "menu") == "on";   // mod / version picker on launch
+        float zoom; if (!float.TryParse(ReadIni(Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "RA3HighFps.ini"), "zoom"), System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out zoom) || zoom < 1f || zoom > 3f) zoom = 1f;   // extra: camera zoom-out, skirmish/campaign only
         string check = null, game = null, lang = null;
         int runver = -1;   // -runver 1.12 (the stock launcher option): run that game version instead of the newest
         var pass = new List<string>();
@@ -101,6 +104,7 @@ static class Program
                 string.Join(", ", cs.Select(s => "0x" + s.ToString("X"))), ps, pm);
             report += string.Format("model transition step operand @0x{0:X}\n", FindModelTransitionStep(c));
             report += string.Format("structure build-up block @0x{0:X}\n", FindUnpackProgress(c));
+            uint cno; report += string.Format("zoom max site @0x{0:X}, network object @0x{1:X}\n", FindZoomSite(c, out cno), cno);
             report += "fade frame reads: " + string.Join(", ", FindFadeFrameReads(c).Select(s => "0x" + s.ToString("X"))) + "\n";
             uint sbf, sbs = FindScrollBySlot(c, out sbf);
             report += string.Format("camera scrollBy @0x{0:X} (vtable slot 0x{1:X})\n", sbf, sbs);
@@ -165,6 +169,7 @@ static class Program
         uint limiter = FindLimiterRounding(img, out limiterRA3);
         uint scrollFunc, scrollSlot = FindScrollBySlot(img, out scrollFunc);
         List<uint> fades = FindFadeFrameReads(img);
+        uint netObject, zoomSite = FindZoomSite(img, out netObject);
         SchedSite schedSite = FindScheduler(img);
         bool sched = schedSite != null;
 
@@ -191,6 +196,7 @@ static class Program
                 Redirect(pi.hProcess, sites.Except(ratio).ToList(), (uint)mem);
             }
             else Redirect(pi.hProcess, sites, (uint)mem);
+            if (zoom > 1f && zoomSite != 0) PatchZoom(pi.hProcess, zoomSite, netObject, zoom, (uint)mem + 0x98, (uint)mem + 0x4A0);   // extra: camera zoom-out (offline)
             if (fades.Count > 0) PatchFadeFrameReads(pi.hProcess, img, fades, (uint)mem, (uint)mem + 0x440);   // drawable fade timers
             if (scrollSlot != 0 && fps > 30) PatchScrollBy(pi.hProcess, scrollSlot, scrollFunc, fps, (uint)mem + 0x4F0, (uint)mem + 0x4F8, (uint)mem + 0x3C0);   // camera scroll speed
             if (sched) PatchScheduler(pi.hProcess, img, schedSite, (uint)mem, (uint)mem);   // 15 ticks/s at any fps above 90
@@ -280,11 +286,53 @@ static class Program
 
     // Little window you get when you double-click the exe. Lists every supported game it
     // finds, installs into the ticked ones, then shows the Steam launch option for each.
+    // Optional extras that aren't about frame rate. Off unless ticked here.
+    class ExtrasForm : Form
+    {
+        readonly CheckBox zoomBox = new CheckBox { Text = "Let the camera zoom out further", AutoSize = true };
+        readonly ComboBox amountBox = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList };
+        static readonly float[] Amounts = { 1.25f, 1.5f, 1.75f };
+        public float Zoom { get { return zoomBox.Checked ? Amounts[Math.Max(0, amountBox.SelectedIndex)] : 1f; } }
+
+        public ExtrasForm(float current)
+        {
+            Text = "Extras";
+            AutoScaleDimensions = new SizeF(96f, 96f);
+            AutoScaleMode = AutoScaleMode.Dpi;
+            Font = SystemFonts.MessageBoxFont;
+            FormBorderStyle = FormBorderStyle.FixedDialog;
+            MaximizeBox = MinimizeBox = false;
+            ShowIcon = false; ShowInTaskbar = false;
+            StartPosition = FormStartPosition.CenterParent;
+
+            Controls.Add(new Label { Text = "Camera", AutoSize = true, Location = new Point(16, 14), Font = new Font(Font, FontStyle.Bold) });
+            zoomBox.Location = new Point(16, 38);
+            zoomBox.Checked = current > 1f;
+            Controls.Add(zoomBox);
+            Controls.Add(new Label { Text = "Amount:", AutoSize = true, Location = new Point(34, 68) });
+            foreach (float a in Amounts) amountBox.Items.Add(a.ToString("0.##", System.Globalization.CultureInfo.InvariantCulture) + "x");
+            int idx = Array.FindIndex(Amounts, a => Math.Abs(a - current) < 0.01f);
+            amountBox.SelectedIndex = idx >= 0 ? idx : Amounts.Length - 1;
+            amountBox.Bounds = new Rectangle(95, 65, 70, 23);
+            amountBox.Enabled = zoomBox.Checked;
+            zoomBox.CheckedChanged += (s, e) => amountBox.Enabled = zoomBox.Checked;
+            Controls.Add(amountBox);
+            Controls.Add(new Label { AutoSize = false, Bounds = new Rectangle(34, 96, 330, 48), ForeColor = SystemColors.GrayText,
+                                     Text = "Red Alert 3 only. Works in skirmish and campaign; online and LAN games always use the normal zoom." });
+
+            var ok = new Button { Text = "OK", DialogResult = DialogResult.OK, Bounds = new Rectangle(208, 154, 75, 23) };
+            var cancel = new Button { Text = "Cancel", DialogResult = DialogResult.Cancel, Bounds = new Rectangle(289, 154, 75, 23) };
+            Controls.AddRange(new Control[] { ok, cancel });
+            AcceptButton = ok; CancelButton = cancel;
+            ClientSize = new Size(380, 190);
+        }
+    }
     class SetupForm : Form
     {
         readonly ComboBox fpsBox = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList };
         readonly CheckedListBox gameList = new CheckedListBox { CheckOnClick = true, IntegralHeight = false, BorderStyle = BorderStyle.FixedSingle };
         readonly CheckBox menuBox = new CheckBox { Text = "Show a mod && version picker when the game starts", AutoSize = true };
+        float zoomValue = 1f;   // extras: camera zoom-out factor (1 = off)
         List<Tuple<string, string>> games;
 
         public SetupForm()
@@ -338,7 +386,11 @@ static class Program
             menuBox.Location = new Point(20, y + 36);
             menuBox.Checked = games.Any(g => ReadIni(IniPath(g.Item2), "menu") == "on");
             Controls.Add(menuBox);
-            y += 70;
+            foreach (var g in games) { float z; if (float.TryParse(ReadIni(IniPath(g.Item2), "zoom"), System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out z) && z > 1f) { zoomValue = z; break; } }
+            var extras = new Button { Text = "Extras...", Bounds = new Rectangle(20, y + 62, 90, 23) };
+            extras.Click += (s, e) => { using (var x = new ExtrasForm(zoomValue)) if (x.ShowDialog(this) == DialogResult.OK) zoomValue = x.Zoom; };
+            Controls.Add(extras);
+            y += 100;
             Controls.Add(Line(y));
             var install = new Button { Text = "Install", Bounds = new Rectangle(324, y + 13, 75, 23), Enabled = games.Count > 0 };
             var cancel = new Button { Text = "Cancel", Bounds = new Rectangle(405, y + 13, 75, 23) };
@@ -374,6 +426,7 @@ static class Program
                     if (!File.Exists(IniPath(dir))) File.WriteAllLines(IniPath(dir), new[] { "; C&C FPS Unlocker settings (fps: multiple of 15, 30-240; menu: on/off)" });
                     SetIni(IniPath(dir), "fps", SelectedFps().ToString());
                     SetIni(IniPath(dir), "menu", menuBox.Checked ? "on" : "off");
+                    SetIni(IniPath(dir), "zoom", zoomValue.ToString("0.##", System.Globalization.CultureInfo.InvariantCulture));
                     done.Add(Tuple.Create(games[i].Item1, "\"" + target + "\" %command%"));
                 }
             }
@@ -1147,6 +1200,38 @@ static class Program
             throw new Exception("VirtualProtectEx failed.");
         Write(proc, slot, u(stubVa));
         VirtualProtectEx(proc, (IntPtr)slot, (UIntPtr)4, old, out old);
+    }
+
+    // Extra (off by default): camera zoom-out. The view's setZoom clamps the zoom to a max it gets
+    // from the map's camera limits (RA3: 550 by default). The call that fetches the max is wrapped
+    // so the result is multiplied by the ini's `zoom` factor, but only when there is no network
+    // object, i.e. in skirmish and campaign, never online or LAN.
+    const string ZoomMaxPattern = "8B 96 FC 26 00 00 8B 42 04 57 8D BE FC 26 00 00 8B CF FF D0 8B 17 8B 02 51 8B CF D9 1C 24 FF D0";
+    const string NetObjectPattern = "8B 35 ?? ?? ?? ?? 3B F5 0F 84 ?? ?? ?? ?? 80 3D ?? ?? ?? ?? 00 0F 85 ?? ?? ?? ?? 80 3D ?? ?? ?? ?? 00 0F 85";
+
+    static uint FindZoomSite(byte[] img, out uint netObject)
+    {
+        uint z = FindUnique(img, ZoomMaxPattern), n = FindUnique(img, NetObjectPattern);
+        netObject = n != 0 ? BitConverter.ToUInt32(img, (int)(n + 2 - ImageBase)) : 0;
+        return z != 0 && n != 0 ? z + 0xA : 0;   // `lea edi,[esi+26FCh] / mov ecx,edi / call eax` (10 bytes)
+    }
+
+    static void PatchZoom(IntPtr proc, uint site, uint netObject, float factor, uint factorVa, uint stubVa)
+    {
+        Write(proc, factorVa, BitConverter.GetBytes(factor));
+        var s = new Asm(stubVa);
+        s.E(0x8D, 0xBE, 0xFC, 0x26, 0, 0, 0x8B, 0xCF, 0xFF, 0xD0);   // original: lea edi,[esi+26FCh] / mov ecx,edi / call eax  (st0 = max zoom)
+        s.E(0x83, 0x3D); s.D(netObject); s.E(0x00); s.J(0x75, "online");   // network game: leave it
+        s.E(0xD8, 0x0D); s.D(factorVa);                              // fmul [factor]
+        s.L("online");
+        s.E(0xC3);
+        Write(proc, stubVa, s.Done(0x40));
+        var p = new List<byte> { 0xE8 }; p.AddRange(BitConverter.GetBytes(stubVa - (site + 5))); p.AddRange(new byte[] { 0x90, 0x90, 0x90, 0x90, 0x90 });
+        uint old;
+        if (!VirtualProtectEx(proc, (IntPtr)site, (UIntPtr)10, PAGE_EXECUTE_READWRITE, out old))
+            throw new Exception("VirtualProtectEx failed.");
+        Write(proc, site, p.ToArray());
+        VirtualProtectEx(proc, (IntPtr)site, (UIntPtr)10, old, out old);
     }
 
     // Tiny assembler for the stubs: raw bytes, labels, short jumps and rel32 calls/jumps.

@@ -88,6 +88,6 @@ Put these in the Steam launch options, before `%command%`:
 - [apitrace](https://github.com/apitrace/apitrace), which made it possible to find the flicker.
 - Not affiliated with EA or C&C:Online. Command & Conquer, Red Alert and Tiberium are trademarks of Electronic Arts.
 
-MIT license. Do whatever you want with it.
+Licensed under the GNU GPL v3 (see LICENSE): you're free to use, share and change it, but anything built from this code has to stay open source under the same license and keep the credit. Versions up to v1.6 were released under MIT.
 
 — TheeHorse
