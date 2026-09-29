@@ -74,18 +74,18 @@ The fix replaces both `getFrame()` reads in that function with the current logic
 
 To make the rise smooth instead of stepping 15 times a second, the whole calculation runs in 1/240 s units (the three conversions point at a copy of `framesPerMs` times 8), and "now" adds the engine's between-ticks fraction to the logic frame.
 
-## Game speed above 90 fps (all three games)
+## Game speed (all three games)
 
 All three games split every 15 Hz logic tick into 6 phases. Below 90 fps they batch several phases per frame. At 90 and above they run one phase per frame, and after phase 6 they start the next tick straight away, so a tick always takes 6 drawn frames. That's exact at 90 on a PC that holds it, but RA3 at 120 ran 20 ticks/s (33% fast), and whenever a PC drew fewer frames than the target the game went into slow motion (Tiberium Wars on a laptop that managed ~78 fps at a 120 target: 10.5 ticks/s). Measured by reading the logic frame counter (RA3) or counting phase wraps (C&C3) over 20 seconds.
 
-Above 90 fps the per-frame engine update (RA3 1.13 `0x62B920`, TW `0x54B0CE`) is hooked at two spots, and ticks are scheduled by the clock (`timeGetTime`, through the same helper the frame limiter uses) instead of by frame count:
+The per-frame engine update (RA3 1.13 `0x62B920`, TW `0x54B0CE`) is hooked at two spots, and ticks are scheduled by the clock (`timeGetTime`, through the same helper the frame limiter uses) instead of by frame count:
 
 - time is kept in 1/3 ms units so a tick is exactly 200 units and nothing drifts;
 - a new tick starts once 66.67 ms have passed since the last one. If the network holds a tick back, the engine reverts the phase and the hook notices on the next frame and retries every frame, like stock. More than two ticks behind, it resyncs instead of spiralling;
 - each frame every phase that's due by the clock runs (`1 + ceil(t * 6 / 200)`): on a fast PC some frames run none, on a slow one the hook dispatches the extra phases itself through the engine's phase dispatcher (vtable `+90h` in RA3, `+94h` in C&C3) and lets the original code run the last one. Phase 1 still gets exactly one frame, so the network code that runs at tick boundaries runs once per tick;
 - the tick-interpolation value drawables blend with (`[engine+60h]` in RA3, `+48h` in C&C3) is set to the time fraction of the tick every frame, so movement stays smooth at any frame rate.
 
-At 90 and below the hook does nothing. Measured after the fix, all at a 120 target: RA3 14.99 ticks/s, Tiberium Wars 15.00 (on the same laptop that gave 10.5 before), Kane's Wrath 15.00.
+This runs at every frame rate. Below 90 the stock engine batched phases itself (and ran a little slow, e.g. Kane's Wrath at 60 fps: 14.65 ticks/s), so the two places that compute `fps / logic` and compare it with 6 (the phase dispatcher and the tick-boundary check) read `max(fps, 90)` instead, which keeps them in one-phase-per-call mode and leaves the batching to the clock. Measured after the fix: RA3 14.99 ticks/s at 120 and 15.00 at 60, Tiberium Wars 15.00 at 120 (on the same laptop that gave 10.5 before), Kane's Wrath 15.00 at 120 and at 60.
 The frame limiter also truncated its per-frame budget to whole milliseconds (`trunc(66.67 / R)`): 8 ms at 120 fps is really 125 fps, about 4% fast (same at 60 and 240; 90 and stock 30 are about 1% fast). It now carries the dropped fraction into the next frame (8, 8, 9, ...). The same fix is applied to Tiberium Wars and Kane's Wrath, where the limiter calls `_ftol` instead (that block was found by CNCStuff/cnc3_fps_patch).
 
 ## Camera scrolling (all three games)

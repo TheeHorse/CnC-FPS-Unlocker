@@ -105,6 +105,7 @@ static class Program
             uint sbf, sbs = FindScrollBySlot(c, out sbf);
             report += string.Format("camera scrollBy @0x{0:X} (vtable slot 0x{1:X})\n", sbf, sbs);
             var ss = FindScheduler(c);
+            report += "phase ratio sites: " + string.Join(", ", cs.Where(s => IsPhaseRatioSite(c, s)).Select(s => "0x" + s.ToString("X"))) + "\n";
             report += string.Format("tick scheduler: {0}\n", ss != null ? string.Format("advance @0x{0:X}, exit @0x{1:X}, clock @0x{2:X}", ss.Advance, ss.Exit, ss.TimeFn) : "not found");
             bool lr; uint ls = FindLimiterRounding(c, out lr);
             report += string.Format("limiter rounding @0x{0:X} ({1})\n", ls, ls == 0 ? "not found" : lr ? "inline" : "_ftol call");
@@ -179,7 +180,17 @@ static class Program
             IntPtr mem = VirtualAllocEx(pi.hProcess, IntPtr.Zero, (UIntPtr)4096, MEM_COMMIT | MEM_RESERVE, PAGE_EXECUTE_READWRITE);
             if (mem == IntPtr.Zero) throw new Exception("VirtualAllocEx failed.");
             Write(pi.hProcess, (uint)mem, BitConverter.GetBytes(fps));
-            Redirect(pi.hProcess, sites, (uint)mem);
+            if (sched)
+            {
+                // With the clock scheduler in charge at every frame rate, the phase dispatcher and the
+                // tick-boundary check must always work one phase per call (their fps/15 >= 6 branch),
+                // so those two sites read max(fps, 90) instead of the fps.
+                List<uint> ratio = sites.Where(s => IsPhaseRatioSite(img, s)).ToList();
+                Write(pi.hProcess, (uint)mem + 0x90, BitConverter.GetBytes(Math.Max(fps, 90)));
+                Redirect(pi.hProcess, ratio, (uint)mem + 0x90);
+                Redirect(pi.hProcess, sites.Except(ratio).ToList(), (uint)mem);
+            }
+            else Redirect(pi.hProcess, sites, (uint)mem);
             if (fades.Count > 0) PatchFadeFrameReads(pi.hProcess, img, fades, (uint)mem, (uint)mem + 0x440);   // drawable fade timers
             if (scrollSlot != 0 && fps > 30) PatchScrollBy(pi.hProcess, scrollSlot, scrollFunc, fps, (uint)mem + 0x4F0, (uint)mem + 0x4F8, (uint)mem + 0x3C0);   // camera scroll speed
             if (sched) PatchScheduler(pi.hProcess, img, schedSite, (uint)mem, (uint)mem);   // 15 ticks/s at any fps above 90
@@ -1172,8 +1183,9 @@ static class Program
     // All three games split each 15 Hz logic tick into 6 phases. At 90 fps and up the engine runs
     // one phase per drawn frame and starts the next tick right after phase 6, so a tick lasts
     // 6 frames: RA3 at 120 fps ran 20 ticks/s, and a PC that couldn't hold its target (or C&C3,
-    // which fell below it) ran in slow motion. Above 90 fps the per-frame engine update is hooked
-    // and ticks are scheduled by the clock instead: a tick starts every 66.67 ms (kept in 1/3 ms
+    // which fell below it) ran in slow motion; below 90 the stock batching was also a bit off.
+    // The per-frame engine update is hooked at every frame rate and ticks are scheduled by the
+    // clock instead: a tick starts every 66.67 ms (kept in 1/3 ms
     // units so it's exact), the phases that are due by the clock run each frame (several at once
     // on a slow PC, none on idle frames), and the interpolation value drawables use to blend
     // between ticks is set to the time fraction, so movement stays smooth at any frame rate.
@@ -1188,6 +1200,18 @@ static class Program
     {
         if (va == 0 || img[va - ImageBase] != 0xE8) return 0;
         return va + 5 + BitConverter.ToUInt32(img, (int)(va + 1 - ImageBase));
+    }
+
+    // A pacing site that computes fps / logic and then compares it with 6 (the phase dispatcher and
+    // the tick-boundary check): `mov r,[fps]` operand at `site`, then `xor edx,edx / div [logic]`,
+    // then `cmp reg,6` or `push 6` within a few bytes.
+    static bool IsPhaseRatioSite(byte[] img, uint site)
+    {
+        int o = (int)(site - ImageBase) + 4;
+        if (o + 20 > img.Length || img[o] != 0x33 || img[o + 1] != 0xD2 || img[o + 2] != 0xF7 || img[o + 3] != 0x35) return false;
+        for (int i = o + 8; i < o + 16; i++)
+            if ((img[i] == 0x83 && (img[i + 1] & 0xF8) == 0xF8 && img[i + 2] == 0x06) || (img[i] == 0x6A && img[i + 1] == 0x06)) return true;
+        return false;
     }
 
     static SchedSite FindScheduler(byte[] img)
@@ -1221,8 +1245,7 @@ static class Program
         a.E(0x89, 0x35); a.D(eng);                                   // mov [engine],esi  (for the build-up clock)
         a.E(0x50, 0x52, 0x51);                                       // push eax / push edx / push ecx
         a.E(0xA1); a.D(fpsVa); a.E(0x33, 0xD2, 0xB9, 0x0F, 0, 0, 0, 0xF7, 0xF1); a.E(0xA3); a.D(r);   // r = fps / 15
-        a.E(0x83, 0xF8, 0x06); a.J(0x76, "pass");                   // 90 fps or less: stock behaviour
-        a.Rel(0xE8, site.TimeFn);                                    // eax = ms (timeGetTime)
+        a.Rel(0xE8, site.TimeFn);                                   // eax = ms (timeGetTime)
         a.E(0x8D, 0x04, 0x40); a.E(0xA3); a.D(now3);                 // now3 = ms * 3
         a.E(0x83, 0x3D); a.D(t0); a.E(0x00); a.J(0x75, "have");     // first time: tick starts now
         a.E(0xA3); a.D(t0);
@@ -1262,7 +1285,7 @@ static class Program
 
         // Stub B, called in place of `mov ecx,[global]` at the exit: interpolation = time fraction of the tick.
         var b = new Asm(stubB);
-        b.E(0x50, 0xA1); b.D(r); b.E(0x83, 0xF8, 0x06); b.J(0x76, "done");
+        b.E(0x50);
         b.E(0xA1); b.D(now3); b.E(0x2B, 0x05); b.D(t0);
         b.E(0x85, 0xC0); b.J(0x7D, "b1"); b.E(0x33, 0xC0);
         b.L("b1");
