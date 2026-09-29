@@ -1242,16 +1242,26 @@ static class Program
     // (`frame - [drawable+130h] >= 6` -> skip), the most frames a tick has at 90 fps. With more
     // frames per tick, units froze for the rest of the tick and then jumped. Both checks get
     // fps/15 + 2 instead.
+    // Same check in every game, compiled with different registers: RA3 `sub eax,[esi+130h]`,
+    // Tiberium Wars `[ebx/esi+138h]`, Kane's Wrath `[edi]`/`[esi]` (pointing at +138h).
+    static readonly string[] InterpWindowPatterns = {
+        "2B 86 30 01 00 00 83 F8 06",                                            // RA3
+        "FF 50 78 2B 83 38 01 00 00 83 F8 06", "FF 50 78 2B 86 38 01 00 00 83 F8 06",   // Tiberium Wars
+        "FF 50 78 2B 07 83 F8 06", "FF 50 78 2B 06 83 F8 06" };                   // Kane's Wrath
+
     static List<uint> FindInterpWindow(byte[] img)
     {
         var list = new List<uint>();
-        int[] pat = "2B 86 30 01 00 00 83 F8 06".Split(' ').Select(x => Convert.ToInt32(x, 16)).ToArray();
         int end = TextEnd(img);
-        for (int i = 0x1000; i < end - pat.Length; i++)
+        foreach (string pattern in InterpWindowPatterns)
         {
-            int j = 0;
-            while (j < pat.Length && img[i + j] == pat[j]) j++;
-            if (j == pat.Length) list.Add(ImageBase + (uint)i + 8);   // the 06
+            int[] pat = pattern.Split(' ').Select(x => Convert.ToInt32(x, 16)).ToArray();
+            for (int i = 0x1000; i < end - pat.Length; i++)
+            {
+                int j = 0;
+                while (j < pat.Length && img[i + j] == pat[j]) j++;
+                if (j == pat.Length) list.Add(ImageBase + (uint)(i + pat.Length - 1));   // the 06
+            }
         }
         return list.Count == 2 ? list : new List<uint>();
     }
