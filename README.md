@@ -18,6 +18,18 @@ To uninstall, clear the Launch Options box in Steam.
 
 Needs the **Steam** versions (current updates: RA3 1.13, Tiberium Wars 1.10, Kane's Wrath 1.3).
 
+### Drop-in version (no installer, no exe)
+
+For non-Steam copies, or if you'd rather just copy files: download `CnC-FPS-Unlocker-DropIn.zip` from [Releases](../../releases) and copy the three files for your game next to the game's real executable:
+
+| Game | Files | Copy into |
+|---|---|---|
+| Red Alert 3 (1.12 / 1.13) | `d3d9.dll`, `CnCFpsUnlocker.dll`, `RA3HighFps.ini` | `<RA3>\Data\` |
+| Tiberium Wars (1.10) | `dinput8.dll`, `CnCFpsUnlocker.dll`, `RA3HighFps.ini` | `<TW>\RetailExe\1.10\` |
+| Kane's Wrath (1.3) | `dinput8.dll`, `CnCFpsUnlocker.dll`, `RA3HighFps.ini` | `<KW>\RetailExe\1.3\` |
+
+Then start the game however you normally do. Settings are in `RA3HighFps.ini`; to uninstall, delete the dll. The game loads the dll from its own folder, it passes everything through to the real Windows one and applies the same in-memory fixes. Works alongside Tacitus (C&C:Online), and it's fine to have both this and the Steam launch option, it only patches once. Source is in [`dll/`](dll).
+
 ## Picking a frame rate
 
 It has to be a multiple of 15 (60, 75, 90, 120, 135, 165, 240...). These games tick 15 times a second, so each tick needs a whole number of frames or the game speed drifts. If you have a 144 Hz monitor, use 135. It never goes above your monitor's refresh rate (it rounds down to a multiple of 15), since the game can't draw faster than the screen anyway.

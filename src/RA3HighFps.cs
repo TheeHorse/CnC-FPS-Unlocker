@@ -163,6 +163,72 @@ static class Program
         string exe = Path.Combine(game, SetExe(sku));
 
         byte[] img = File.ReadAllBytes(exe);
+        string cmd = "\"" + exe + "\" -config \"" + sku + "\"" + (pass.Count > 0 ? " " + string.Join(" ", pass) : "");
+        var si = new STARTUPINFO { cb = Marshal.SizeOf(typeof(STARTUPINFO)) };
+        PROCESS_INFORMATION pi;
+        if (!CreateProcess(null, new StringBuilder(cmd), IntPtr.Zero, IntPtr.Zero, false, CREATE_SUSPENDED, IntPtr.Zero, game, ref si, out pi))
+            throw new Exception("Could not start " + exe + " (error " + Marshal.GetLastWin32Error() + ").");
+
+        List<uint> sites;
+        try
+        {
+            sites = ApplyPatches(pi.hProcess, img, fps, zoom, throttlePfx, extra, ticks);
+        }
+        catch
+        {
+            TerminateProcess(pi.hProcess, 1);
+            throw;
+        }
+        ResumeThread(pi.hThread);
+        CloseHandle(pi.hThread);
+        // Once the game (and Tacitus) are fully up, log whether the patch survived.
+        if (WaitForSingleObject(pi.hProcess, 45000) != 0)
+            Diagnose(pi.hProcess, img, sites, fps);
+        // Stay alive until the game exits so Steam keeps showing it as running.
+        WaitForSingleObject(pi.hProcess, 0xFFFFFFFF);
+        CloseHandle(pi.hProcess);
+        return 0;
+    }
+
+    // Drop-in DLL mode: the proxy d3d9.dll / dinput8.dll loads this assembly inside the game
+    // process just before the game's own startup code runs and calls DllEntry.Run (see dll/proxy.c).
+    internal static int InProcess(string dir)
+    {
+        string ini = Path.Combine(dir, "RA3HighFps.ini");
+        try
+        {
+            int fps = ReadIniFps(ini, 120);
+            if (fps < 30 || fps > 240 || fps % 15 != 0) fps = 120;
+            float zoom; if (!float.TryParse(ReadIni(ini, "zoom"), System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out zoom) || zoom < 1f || zoom > 3f) zoom = 1f;
+            int hz = MonitorHz();
+            if (hz >= 30 && fps > hz / 15 * 15) fps = Math.Max(30, hz / 15 * 15);
+            byte[] img = File.ReadAllBytes(Process.GetCurrentProcess().MainModule.FileName);
+            IntPtr self = Process.GetCurrentProcess().Handle;
+            // Started through the Steam launch option as well? Then the launcher has patched it already.
+            uint render = FindRenderFps(img);
+            List<uint> pacing = FindPacingSites(img, render, render - 4);
+            if (pacing.Count > 0)
+            {
+                var live = new byte[4]; UIntPtr got;
+                ReadProcessMemory(self, (IntPtr)pacing[0], live, (UIntPtr)4, out got);
+                if (BitConverter.ToUInt32(live, 0) != BitConverter.ToUInt32(img, (int)(pacing[0] - ImageBase))) return 2;
+            }
+            ApplyPatches(self, img, fps, zoom, true, null, false);
+            File.WriteAllText(Path.Combine(Path.GetTempPath(), "RA3HighFps.log"), DateTime.Now + "  drop-in DLL, fps=" + fps + ", zoom=" + zoom + "\r\n");
+            return 1;
+        }
+        catch (Exception e)
+        {
+            try { File.WriteAllText(Path.Combine(Path.GetTempPath(), "RA3HighFps.log"), DateTime.Now + "  drop-in DLL failed: " + e + "\r\n"); } catch { }
+            return 0;
+        }
+    }
+
+    // Finds every patch site in the game image and applies the patches to proc (the game, started
+    // suspended by the launcher, or the current process when running as the drop-in DLL).
+    // Returns the redirected pacing sites (for the diagnostics log).
+    static List<uint> ApplyPatches(IntPtr proc, byte[] img, int fps, float zoom, bool throttlePfx, string extra, bool ticks)
+    {
         uint render = FindRenderFps(img);
         List<uint> sites = FindPacingSites(img, render, render - 4);
         sites.AddRange(SelectSites(FindExtraSites(img, render, render - 4, sites), extra));
@@ -180,60 +246,38 @@ static class Program
         SchedSite schedSite = FindScheduler(img);
         bool sched = schedSite != null;
 
-        string cmd = "\"" + exe + "\" -config \"" + sku + "\"" + (pass.Count > 0 ? " " + string.Join(" ", pass) : "");
-        var si = new STARTUPINFO { cb = Marshal.SizeOf(typeof(STARTUPINFO)) };
-        PROCESS_INFORMATION pi;
-        if (!CreateProcess(null, new StringBuilder(cmd), IntPtr.Zero, IntPtr.Zero, false, CREATE_SUSPENDED, IntPtr.Zero, game, ref si, out pi))
-            throw new Exception("Could not start " + exe + " (error " + Marshal.GetLastWin32Error() + ").");
-
-        try
+        // Layout: +0 render fps, +8 particle accumulator, +40h stub code.
+        IntPtr mem = VirtualAllocEx(proc, IntPtr.Zero, (UIntPtr)4096, MEM_COMMIT | MEM_RESERVE, PAGE_EXECUTE_READWRITE);
+        if (mem == IntPtr.Zero) throw new Exception("VirtualAllocEx failed.");
+        Write(proc, (uint)mem, BitConverter.GetBytes(fps));
+        if (sched)
         {
-            // Layout: +0 render fps, +8 particle accumulator, +40h stub code.
-            IntPtr mem = VirtualAllocEx(pi.hProcess, IntPtr.Zero, (UIntPtr)4096, MEM_COMMIT | MEM_RESERVE, PAGE_EXECUTE_READWRITE);
-            if (mem == IntPtr.Zero) throw new Exception("VirtualAllocEx failed.");
-            Write(pi.hProcess, (uint)mem, BitConverter.GetBytes(fps));
-            if (sched)
-            {
-                // With the clock scheduler in charge at every frame rate, the phase dispatcher and the
-                // tick-boundary check must always work one phase per call (their fps/15 >= 6 branch),
-                // so those two sites read max(fps, 90) instead of the fps.
-                List<uint> ratio = sites.Where(s => IsPhaseRatioSite(img, s)).ToList();
-                Write(pi.hProcess, (uint)mem + 0x90, BitConverter.GetBytes(Math.Max(fps, 90)));
-                Redirect(pi.hProcess, ratio, (uint)mem + 0x90);
-                Redirect(pi.hProcess, sites.Except(ratio).ToList(), (uint)mem);
-            }
-            else Redirect(pi.hProcess, sites, (uint)mem);
-            if (zoom > 1f && zoomSite != 0) PatchZoom(pi.hProcess, zoomSite, netObject, zoom, (uint)mem + 0x98, (uint)mem + 0x4A0);   // extra: camera zoom-out (offline)
-            if (fades.Count > 0) PatchFadeFrameReads(pi.hProcess, img, fades, (uint)mem, (uint)mem + 0x440);   // drawable fade timers
-            if (scrollSlot != 0 && fps > 30) PatchScrollBy(pi.hProcess, scrollSlot, scrollFunc, fps, (uint)mem + 0x4F0, (uint)mem + 0x4F8, (uint)mem + 0x3C0);   // camera scroll speed
-            if (interpWindow.Count > 0) PatchInterpWindow(pi.hProcess, interpWindow, fps);   // drawables keep interpolating for the whole tick
-            if (sched) PatchScheduler(pi.hProcess, img, schedSite, (uint)mem, (uint)mem);   // 15 ticks/s at any fps above 90
-            if (limiter != 0) PatchLimiterRounding(pi.hProcess, limiter, limiterRA3, (uint)mem + 0x28, (uint)mem + 0x2C, (uint)mem + 0x280);   // exact frame pacing
-            if (unpack != 0) PatchUnpack(pi.hProcess, img, unpack, (uint)mem + 0x200, sched ? (uint)mem + 0x3C : 0, (uint)mem + 0x4E0);   // Soviet/Empire build-up clock
-            if (anim2d.Count > 0) PatchAnim2D(pi.hProcess, img, anim2d, (uint)mem, (uint)mem + 0x100);   // 30 Hz sprite-animation clock
-            if (modelStep != 0)   // model transitions: 1/fps per drawn frame instead of 1/30
-            {
-                Write(pi.hProcess, (uint)mem + 0x10, BitConverter.GetBytes(1f / fps));
-                Redirect(pi.hProcess, new List<uint> { modelStep }, (uint)mem + 0x10);
-            }
-            if (throttlePfx && pfxSite != 0)
-                ThrottleParticles(pi.hProcess, pfxSite, pfxSim, (uint)mem, (uint)mem + 8, (uint)mem + 0x40);
-            FlushInstructionCache(pi.hProcess, IntPtr.Zero, UIntPtr.Zero);
+            // With the clock scheduler in charge at every frame rate, the phase dispatcher and the
+            // tick-boundary check must always work one phase per call (their fps/15 >= 6 branch),
+            // so those two sites read max(fps, 90) instead of the fps.
+            List<uint> ratio = sites.Where(s => IsPhaseRatioSite(img, s)).ToList();
+            Write(proc, (uint)mem + 0x90, BitConverter.GetBytes(Math.Max(fps, 90)));
+            Redirect(proc, ratio, (uint)mem + 0x90);
+            Redirect(proc, sites.Except(ratio).ToList(), (uint)mem);
         }
-        catch
+        else Redirect(proc, sites, (uint)mem);
+        if (zoom > 1f && zoomSite != 0) PatchZoom(proc, zoomSite, netObject, zoom, (uint)mem + 0x98, (uint)mem + 0x4A0);   // extra: camera zoom-out (offline)
+        if (fades.Count > 0) PatchFadeFrameReads(proc, img, fades, (uint)mem, (uint)mem + 0x440);   // drawable fade timers
+        if (scrollSlot != 0 && fps > 30) PatchScrollBy(proc, scrollSlot, scrollFunc, fps, (uint)mem + 0x4F0, (uint)mem + 0x4F8, (uint)mem + 0x3C0);   // camera scroll speed
+        if (interpWindow.Count > 0) PatchInterpWindow(proc, interpWindow, fps);   // drawables keep interpolating for the whole tick
+        if (sched) PatchScheduler(proc, img, schedSite, (uint)mem, (uint)mem);   // 15 ticks/s at any fps above 90
+        if (limiter != 0) PatchLimiterRounding(proc, limiter, limiterRA3, (uint)mem + 0x28, (uint)mem + 0x2C, (uint)mem + 0x280);   // exact frame pacing
+        if (unpack != 0) PatchUnpack(proc, img, unpack, (uint)mem + 0x200, sched ? (uint)mem + 0x3C : 0, (uint)mem + 0x4E0);   // Soviet/Empire build-up clock
+        if (anim2d.Count > 0) PatchAnim2D(proc, img, anim2d, (uint)mem, (uint)mem + 0x100);   // 30 Hz sprite-animation clock
+        if (modelStep != 0)   // model transitions: 1/fps per drawn frame instead of 1/30
         {
-            TerminateProcess(pi.hProcess, 1);
-            throw;
+            Write(proc, (uint)mem + 0x10, BitConverter.GetBytes(1f / fps));
+            Redirect(proc, new List<uint> { modelStep }, (uint)mem + 0x10);
         }
-        ResumeThread(pi.hThread);
-        CloseHandle(pi.hThread);
-        // Once the game (and Tacitus) are fully up, log whether the patch survived.
-        if (WaitForSingleObject(pi.hProcess, 45000) != 0)
-            Diagnose(pi.hProcess, img, sites, fps);
-        // Stay alive until the game exits so Steam keeps showing it as running.
-        WaitForSingleObject(pi.hProcess, 0xFFFFFFFF);
-        CloseHandle(pi.hProcess);
-        return 0;
+        if (throttlePfx && pfxSite != 0)
+            ThrottleParticles(proc, pfxSite, pfxSim, (uint)mem, (uint)mem + 8, (uint)mem + 0x40);
+        FlushInstructionCache(proc, IntPtr.Zero, UIntPtr.Zero);
+        return sites;
     }
 
     // Writes %TEMP%\RA3HighFps.log: each patched site's live bytes vs. the file,
@@ -1651,4 +1695,10 @@ static class Program
     [DllImport("kernel32.dll")] static extern int GetProcessId(IntPtr h);
     [DllImport("kernel32.dll", SetLastError = true)]
     static extern bool ReadProcessMemory(IntPtr h, IntPtr addr, byte[] buf, UIntPtr size, out UIntPtr read);
+}
+
+// Called by the drop-in DLL (ICLRRuntimeHost::ExecuteInDefaultAppDomain needs public static int Method(string)).
+public static class DllEntry
+{
+    public static int Run(string dir) { return Program.InProcess(dir); }
 }
