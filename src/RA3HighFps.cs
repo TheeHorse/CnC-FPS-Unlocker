@@ -376,14 +376,15 @@ static class Program
 
             int y = gameList.Bottom + 16;
             Controls.Add(new Label { Text = "Frame rate:", AutoSize = true, Location = new Point(20, y + 4) });
-            for (int f = 30; f <= 240; f += 15) fpsBox.Items.Add(f + " fps");
+            Func<int, string> fpsLabel = f => f + " fps" + (f >= 240 ? " (experimental)" : "");   // 240 is still being tested
+            for (int f = 30; f <= 240; f += 15) fpsBox.Items.Add(fpsLabel(f));
             int current = games.Select(g => ReadIniFps(IniPath(g.Item2), 0)).FirstOrDefault(v => v > 0);
             int pick = current > 0 ? current : Math.Max(30, Math.Min(240, MonitorHz() / 15 * 15));
-            fpsBox.SelectedItem = pick + " fps";
+            fpsBox.SelectedItem = fpsLabel(pick);
             if (fpsBox.SelectedIndex < 0) fpsBox.SelectedItem = "120 fps";
-            fpsBox.Bounds = new Rectangle(100, y, 100, 23);
+            fpsBox.Bounds = new Rectangle(100, y, 160, 23);
             Controls.Add(fpsBox);
-            Controls.Add(new Label { AutoSize = true, Location = new Point(210, y + 4), ForeColor = SystemColors.GrayText,
+            Controls.Add(new Label { AutoSize = true, Location = new Point(270, y + 4), ForeColor = SystemColors.GrayText,
                                      Text = "(your monitor: " + MonitorHz() + " Hz)" });
 
             menuBox.Location = new Point(20, y + 36);
