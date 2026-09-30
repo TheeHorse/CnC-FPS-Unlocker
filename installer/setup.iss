@@ -25,7 +25,7 @@ Uninstallable=no
 DisableProgramGroupPage=yes
 DisableReadyPage=yes
 PrivilegesRequired=admin
-WizardStyle=modern
+WizardStyle=classic
 ; no compression: the files are tiny, and packed data makes some scanners think it's obfuscated
 Compression=none
 OutputDir=.
@@ -314,7 +314,7 @@ begin
   end;
   if Known(dir) then exit;
   AddGame(GameName(dir), dir);
-  GameList.AddCheckBox(GameNames[GetArrayLength(GameNames) - 1], GameDirs[GetArrayLength(GameDirs) - 1], 0, True, True, False, False, nil);
+  GameList.AddCheckBox(GameNames[GetArrayLength(GameNames) - 1], '', 0, True, True, False, False, nil);
 end;
 
 procedure InitializeWizard;
@@ -323,7 +323,7 @@ begin
   FindSteamGames;
   FindEAGames;
 
-  GamePage := CreateCustomPage(wpWelcome, 'Install C&C FPS Unlocker', 'Pick your games and a frame rate.');
+  GamePage := CreateCustomPage(wpWelcome, 'Select Games', 'Which games should the FPS Unlocker be installed for?');
 
   lbl := TNewStaticText.Create(GamePage);
   lbl.Parent := GamePage.Surface;
@@ -334,7 +334,7 @@ begin
   GameList.Parent := GamePage.Surface;
   GameList.SetBounds(0, lbl.Top + lbl.Height + ScaleY(6), GamePage.SurfaceWidth, ScaleY(96));
   for i := 0 to GetArrayLength(GameDirs) - 1 do
-    GameList.AddCheckBox(GameNames[i], GameDirs[i], 0, True, True, False, False, nil);
+    GameList.AddCheckBox(GameNames[i], '', 0, True, True, False, False, nil);   { same order as GameDirs }
 
   btn := TNewButton.Create(GamePage);
   btn.Parent := GamePage.Surface;
@@ -377,7 +377,7 @@ begin
 
   ZoomCheck := TNewCheckBox.Create(GamePage);
   ZoomCheck.Parent := GamePage.Surface;
-  ZoomCheck.Caption := 'Red Alert 3: let the camera zoom out further (skirmish and campaign)';
+  ZoomCheck.Caption := 'Red Alert 3: let the camera zoom out further';
   ZoomCheck.SetBounds(0, FpsBox.Top + FpsBox.Height + ScaleY(12), GamePage.SurfaceWidth - ScaleX(90), ScaleY(17));
   ZoomCheck.OnClick := @ZoomCheckClick;
 
@@ -461,7 +461,7 @@ begin
   for i := 0 to GameList.Items.Count - 1 do
     if GameList.Checked[i] then
     begin
-      if not InstallGame(GameList.ItemSubItem[i], fps, zoom, err) then
+      if not InstallGame(GameDirs[i], fps, zoom, err) then
       begin
         MsgBox('Couldn''t install for ' + GameList.ItemCaption[i] + ':' + #13#10#13#10 + err, mbError, MB_OK);
         Result := False;
