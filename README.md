@@ -1,6 +1,6 @@
 # C&C FPS Unlocker
 
-Play **Red Alert 3**, **C&C 3: Tiberium Wars** and **Kane's Wrath** at 60, 120, 165 or whatever fps you want. Free, open source, works with Tacitus / C&C:Online.
+Play **Red Alert 3**, **C&C 3: Tiberium Wars** and **Kane's Wrath** at 60, 120, 165 or whatever fps you want. Free and open source.
 
 These games are locked to 30 fps and if you just unlock them the whole game speeds up. This keeps the game speed normal and only makes it smoother. No effect flicker either.
 
@@ -53,10 +53,6 @@ Stuff that isn't about frame rate. Off unless you turn it on in the setup (or th
 - The setup is optional and only copies files. If you don't want to run an exe, install by hand
 - Everything's built from the source here: [`src/Unlocker.cs`](src/Unlocker.cs) (the fixes, C#), [`installer/setup.iss`](installer/setup.iss) (the setup, made with [Inno Setup](https://jrsoftware.org/isinfo.php)) and [`dll/proxy.c`](dll/proxy.c) (the small `d3d9.dll` / `dinput8.dll`, about 150 lines). Run `build-from-source.bat` to build the dll yourself with the C# compiler that comes with Windows, and `dll/build.bat` for the dlls (needs MinGW)
 
-## Online
-
-A C&C:Online admin told me it won't get anyone banned. Only the rendering changes, game logic is the same as everyone else's. Still, use it online at your own risk and ask on their Discord if you're not sure.
-
 ## How it works (short version)
 
 These games use the number 30 for two different things: how often they draw a frame, and as a clock for effects (particles count time in 30ths of a second). Old unlock methods change both, so particles get birth times from the "future" and you get huge white or colored flashes whenever something shoots, especially near water. This only changes the first one.
@@ -80,7 +76,7 @@ Since the game loads the dll itself, mods and older versions just work the norma
 - [red-alert-3-60fps-mod](https://github.com/isma3iloiso/red-alert-3-60fps-mod) by isma3iloiso, their patch notes pointed me at the render fps value in the first place
 - [CNCStuff/cnc3_fps_patch](https://github.com/CNCStuff/cnc3_fps_patch), which found some of the C&C3 fixes (frame limiter, scroll, anim timing)
 - [apitrace](https://github.com/apitrace/apitrace), couldn't have found the flicker without it
-- Not affiliated with EA or C&C:Online. Command & Conquer, Red Alert and Tiberium are trademarks of Electronic Arts
+- Not affiliated with EA. Command & Conquer, Red Alert and Tiberium are trademarks of Electronic Arts
 
 GPL v3 (see LICENSE). Use it, share it, change it, but anything built from this code has to stay open source under the same license and keep the credit. Versions up to v1.5 were MIT.
 
