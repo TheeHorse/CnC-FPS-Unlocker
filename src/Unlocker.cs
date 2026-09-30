@@ -111,7 +111,8 @@ static class Program
         uint netObject, zoomSite = FindZoomSite(img, out netObject);
         List<uint> interpWindow = FindInterpWindow(img);
         SchedSite schedSite = FindScheduler(img);
-        bool sched = schedSite != null;
+        bool sched = schedSite != null && On("sched");   // skip=sched falls back to the plain fps redirect
+        HeldCamera held = FindHeldCamera(img);
 
         // +0 fps, +8 particle accum, +40 stubs
         IntPtr mem = Alloc(proc, 4096);
@@ -130,6 +131,7 @@ static class Program
         if (On("fades") && fades.Count > 0) PatchFadeFrameReads(proc, img, fades, (uint)mem, (uint)mem + 0x440);
         if (On("scroll") && scrollSlot != 0 && fps > 30) PatchScrollBy(proc, scrollSlot, scrollFunc, fps, (uint)mem + 0x4F0, (uint)mem + 0x4F8, (uint)mem + 0x3C0);
         if (On("interp") && interpWindow.Count > 0) PatchInterpWindow(proc, interpWindow, fps);
+        if (On("camerakeys") && held != null && fps > 30) PatchHeldCamera(proc, img, held, fps, (uint)mem + 0xC00, (uint)mem + 0xC40);
         if (sched) PatchScheduler(proc, img, schedSite, (uint)mem, (uint)mem);
         if (On("limiter") && limiter != 0) PatchLimiterRounding(proc, limiter, limiterRA3, (uint)mem + 0x28, (uint)mem + 0x2C, (uint)mem + 0x280);
         if (On("construction") && unpack != 0) PatchUnpack(proc, img, unpack, (uint)mem + 0x200, sched ? (uint)mem + 0x3C : 0, (uint)mem + 0x4E0);   // construction
@@ -609,6 +611,82 @@ static class Program
             throw new Exception("couldn't unprotect game memory");
         Write(proc, site, p.ToArray());
         Protect(proc, (IntPtr)site, (UIntPtr)10, old, out old);
+    }
+
+    // held camera keys (numpad zoom / rotate) do one step per drawn frame, so at 120 fps they went 4x too fast (#15).
+    // zoom: the held-key behaviors call the view's zoomIn/zoomOut (z*0.96 - 1, z*1.05 + 1). they get their own copy
+    // of those two with the step for this fps, the mouse wheel still calls the originals (one full step per notch).
+    // rotate: rate * constant each frame, constant gets * 30/fps. ra3 only for now
+    const string HeldZoomPattern = "80 7C 24 08 00 74 10 8B 0D ?? ?? ?? ?? 8B 01 8B 90 ?? ?? 00 00 FF D2 C2 10 00";
+    const string ViewZoomInPattern = "56 8B F1 57 8B 3E 8B 87 ?? ?? 00 00 FF D0 D8 0D ?? ?? ?? ?? 8B 97 ?? ?? 00 00 51 D8 25 ?? ?? ?? ?? 8B CE D9 1C 24 FF D2 5F 5E C3";
+    const string ViewZoomOutPattern = "56 8B F1 57 8B 3E 8B 87 ?? ?? 00 00 FF D0 D8 0D ?? ?? ?? ?? 8B 97 ?? ?? 00 00 51 D8 05 ?? ?? ?? ?? 8B CE D9 1C 24 FF D2 5F 5E C3";
+    const string HeldRotatePattern = "80 7C 24 08 00 74 ?? F3 0F 10 41 04 8B 44 24 10 F3 0F 59 05 ?? ?? ?? ?? F3 0F 58 00 F3 0F 11 00 C2 10 00";
+
+    class HeldCamera { public uint ZoomIn, ZoomOut, ViewIn, ViewOut, Rotate; }
+
+    static List<uint> FindAll(byte[] img, string pattern)
+    {
+        int[] pat = pattern.Split(' ').Select(t => t == "??" ? -1 : Convert.ToInt32(t, 16)).ToArray();
+        int end = TextEnd(img);
+        var list = new List<uint>();
+        for (int i = 0x1000; i < end - pat.Length; i++)
+        {
+            int j = 0;
+            while (j < pat.Length && (pat[j] < 0 || img[i + j] == pat[j])) j++;
+            if (j == pat.Length) list.Add(ImageBase + (uint)i);
+        }
+        return list;
+    }
+
+    static float FloatAt(byte[] img, uint va)
+    {
+        int o = (int)(va - ImageBase);
+        return o > 0 && o + 4 <= img.Length ? BitConverter.ToSingle(img, o) : float.NaN;
+    }
+
+    static HeldCamera FindHeldCamera(byte[] img)
+    {
+        Func<uint, int, uint> dw = (va, off) => BitConverter.ToUInt32(img, (int)(va - ImageBase) + off);
+        var pair = FindAll(img, HeldZoomPattern);
+        if (pair.Count != 2 || pair[1] != pair[0] + 0x20 || dw(pair[0], 9) != dw(pair[1], 9) || dw(pair[1], 17) != dw(pair[0], 17) + 4)
+            return null;   // zoom in, then zoom out 0x20 later: same view, next slot
+        var h = new HeldCamera { ZoomIn = pair[0], ZoomOut = pair[1], ViewIn = FindUnique(img, ViewZoomInPattern), ViewOut = FindUnique(img, ViewZoomOutPattern), Rotate = FindUnique(img, HeldRotatePattern) };
+        if (h.ViewIn == 0 || h.ViewOut == 0 || h.Rotate == 0) return null;
+        // the stock steps, so we know we have the right functions
+        if (Math.Abs(FloatAt(img, dw(h.ViewIn, 16)) - 0.96f) > 1e-4 || Math.Abs(FloatAt(img, dw(h.ViewOut, 16)) - 1.05f) > 1e-4) return null;
+        if (FloatAt(img, dw(h.ViewIn, 29)) != 1f || FloatAt(img, dw(h.ViewOut, 29)) != 1f) return null;
+        // the view's function table has zoomIn / zoomOut next to each other
+        bool table = false;
+        for (int o = TextEnd(img); o + 8 <= img.Length && !table; o += 4)
+            table = BitConverter.ToUInt32(img, o) == h.ViewIn && BitConverter.ToUInt32(img, o + 4) == h.ViewOut;
+        return table ? h : null;
+    }
+
+    static void PatchHeldCamera(IntPtr proc, byte[] img, HeldCamera h, int fps, uint dataVa, uint stubVa)
+    {
+        double k = 30.0 / fps;
+        var zooms = new[] { new { Beh = h.ZoomIn, Fn = h.ViewIn }, new { Beh = h.ZoomOut, Fn = h.ViewOut } };
+        for (int i = 0; i < 2; i++)
+        {
+            // z = m*z +/- c per frame. same result per second at fps frames: m' = m^(30/fps), c' = c*(1-m')/(1-m)
+            byte[] code = img.Skip((int)(zooms[i].Fn - ImageBase)).Take(43).ToArray();
+            double m = FloatAt(img, BitConverter.ToUInt32(code, 16)), c = FloatAt(img, BitConverter.ToUInt32(code, 29));
+            double m2 = Math.Pow(m, k), c2 = c * (1 - m2) / (1 - m);
+            uint mVa = dataVa + (uint)(i * 8), cVa = mVa + 4, stub = stubVa + (uint)(i * 0x40);
+            Write(proc, mVa, BitConverter.GetBytes((float)m2));
+            Write(proc, cVa, BitConverter.GetBytes((float)c2));
+            BitConverter.GetBytes(mVa).CopyTo(code, 16);   // fmul [m']
+            BitConverter.GetBytes(cVa).CopyTo(code, 29);   // fsub/fadd [c']
+            Write(proc, stub, code);
+            // behavior: mov ecx,[view] / (mov eax,[ecx] / mov edx,[eax+slot] / call edx) -> call stub
+            uint site = zooms[i].Beh + 13;
+            var p = new List<byte> { 0xE8 }; p.AddRange(BitConverter.GetBytes(stub - (site + 5))); p.AddRange(new byte[] { 0x90, 0x90, 0x90, 0x90, 0x90 });
+            Write(proc, site, p.ToArray());
+        }
+        uint rotOperand = h.Rotate + 0x14;
+        float rot = FloatAt(img, BitConverter.ToUInt32(img, (int)(rotOperand - ImageBase)));
+        Write(proc, dataVa + 0x10, BitConverter.GetBytes((float)(rot * k)));
+        Redirect(proc, new List<uint> { rotOperand }, dataVa + 0x10);
     }
 
     // units only interpolate for 6 frames after a logic update (enough at 90fps). above that
