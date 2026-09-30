@@ -38,7 +38,7 @@ static class Program
             skip = (ReadIni(ini, "skip") ?? "").ToLowerInvariant();
             ApplyPatches(IntPtr.Zero, img, fps, zoom, true, null, false);
             File.WriteAllText(Path.Combine(Path.GetTempPath(), "RA3HighFps.log"), DateTime.Now + "  drop-in DLL, fps=" + fps + ", zoom=" + zoom +
-                (skip != "" ? ", skip=" + skip : "") + ", exe=" + Path.GetFileName(Process.GetCurrentProcess().MainModule.FileName) + "\r\n");
+                (skip != "" ? ", skip=" + skip : "") + ", exe=" + Path.GetFileName(Process.GetCurrentProcess().MainModule.FileName) + "\r\n" + found + "\r\n");
             return 1;
         }
         catch (Exception e)
@@ -90,7 +90,7 @@ static class Program
     }
 
     // ini skip=fades,interp,... turns single fixes off (for tracking down problems with mods)
-    static string skip = "";
+    static string skip = "", found = "";
     static bool On(string name) { return !skip.Split(',').Select(s => s.Trim()).Contains(name); }
 
     // proc isn't used, it's always our own process (kept so the patch functions read the same as before)
@@ -113,6 +113,13 @@ static class Program
         SchedSite schedSite = FindScheduler(img);
         bool sched = schedSite != null && On("sched");   // skip=sched falls back to the plain fps redirect
         HeldCamera held = FindHeldCamera(img);
+        // for the log: which fixes this exe has, so reports from unknown builds say what's missing
+        var have = new[] {
+            new { n = "sched", ok = schedSite != null }, new { n = "scroll", ok = scrollSlot != 0 }, new { n = "camerakeys", ok = held != null },
+            new { n = "interp", ok = interpWindow.Count > 0 }, new { n = "limiter", ok = limiter != 0 }, new { n = "construction", ok = unpack != 0 },
+            new { n = "anim2d", ok = anim2d.Count > 0 }, new { n = "models", ok = modelStep != 0 }, new { n = "particles", ok = pfxSite != 0 },
+            new { n = "fades", ok = fades.Count > 0 }, new { n = "zoom", ok = zoomSite != 0 } };
+        found = "found: " + string.Join(" ", have.Where(h => h.ok).Select(h => h.n)) + " | missing: " + string.Join(" ", have.Where(h => !h.ok).Select(h => h.n));
 
         // +0 fps, +8 particle accum, +40 stubs
         IntPtr mem = Alloc(proc, 4096);
