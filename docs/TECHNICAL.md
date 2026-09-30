@@ -10,7 +10,7 @@ Notes for anyone who wants to build on this. Addresses are for the current Steam
 
 ## Why nothing on disk changes
 
-Tacitus only accepts exes it knows, so a patched exe gets rejected. So instead the launcher:
+Launchers that check the game files reject a patched exe, so instead the launcher:
 
 1. starts the stock game with `CREATE_SUSPENDED` and the same `-config "<SkuDef>"` command line RA3.exe would use
 2. allocates a bit of memory in the game, writes the fps there and repoints some `[0xCB8514]` reads at it

@@ -3,7 +3,7 @@
 //
 // CnCFpsUnlocker.dll: the actual fixes. d3d9.dll / dinput8.dll (dll/proxy.c) loads this inside the game
 // right before it starts, it reads RA3HighFps.ini and patches the game's own memory. nothing on disk
-// changes so tacitus / cnc online don't care.
+// changes.
 using System;
 using System.Collections.Generic;
 using System.Diagnostics;
