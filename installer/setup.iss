@@ -1,0 +1,483 @@
+; C&C FPS Unlocker setup - TheeHorse 2026
+; GPL v3 or later, see LICENSE. https://github.com/TheeHorse/CnC-FPS-Unlocker
+;
+; Inno Setup script (https://jrsoftware.org/isinfo.php). Same job as the old Setup.cs:
+; find the games, put the drop-in files (d3d9.dll or dinput8.dll, CnCFpsUnlocker.dll,
+; RA3HighFps.ini) next to each game's real exe. Build with:
+;   ISCC.exe /DFiles=<folder with d3d9.dll, dinput8.dll, CnCFpsUnlocker.dll> setup.iss
+
+#ifndef Files
+  #define Files "..\bin"
+#endif
+#define Version "1.7"
+
+[Setup]
+AppId=TheeHorse.CnCFpsUnlocker
+AppName=C&C FPS Unlocker
+AppVersion={#Version}
+AppVerName=C&C FPS Unlocker {#Version}
+AppPublisher=TheeHorse
+AppPublisherURL=https://github.com/TheeHorse/CnC-FPS-Unlocker
+VersionInfoVersion={#Version}.0.0
+VersionInfoDescription=C&C FPS Unlocker Setup
+CreateAppDir=no
+Uninstallable=no
+DisableProgramGroupPage=yes
+DisableReadyPage=yes
+PrivilegesRequired=admin
+WizardStyle=modern
+; no compression: the files are tiny, and packed data makes some scanners think it's obfuscated
+Compression=none
+OutputDir=.
+OutputBaseFilename=CnC-FPS-Unlocker-Setup
+
+[Files]
+Source: "{#Files}\d3d9.dll"; Flags: dontcopy
+Source: "{#Files}\dinput8.dll"; Flags: dontcopy
+Source: "{#Files}\CnCFpsUnlocker.dll"; Flags: dontcopy
+
+[Code]
+var
+  GamePage: TWizardPage;
+  GameList: TNewCheckListBox;
+  FpsBox, ZoomBox: TNewComboBox;
+  ZoomCheck: TNewCheckBox;
+  GameNames, GameDirs: array of String;
+  Done: String;
+  OldLauncher: Boolean;
+
+function GetDC(hWnd: HWND): LongWord; external 'GetDC@user32.dll stdcall';
+function ReleaseDC(hWnd: HWND; hdc: LongWord): Integer; external 'ReleaseDC@user32.dll stdcall';
+function GetDeviceCaps(hdc: LongWord; index: Integer): Integer; external 'GetDeviceCaps@gdi32.dll stdcall';
+
+function MonitorHz: Integer;
+var dc: LongWord;
+begin
+  dc := GetDC(0);
+  Result := GetDeviceCaps(dc, 116);   { VREFRESH }
+  ReleaseDC(0, dc);
+  if Result < 30 then Result := 60;
+end;
+
+function Norm(s: String): String;
+begin
+  Result := Lowercase(RemoveBackslashUnlessRoot(ExpandFileName(s)));
+end;
+
+function LastPos(sub, s: String): Integer;
+var i: Integer;
+begin
+  Result := 0;
+  for i := Length(s) - Length(sub) + 1 downto 1 do
+    if Copy(s, i, Length(sub)) = sub then begin Result := i; exit; end;
+end;
+
+{ ---- ini (RA3HighFps.ini has no sections, just key=value) ---- }
+
+function IniKeyLine(line, key: String): Boolean;
+var t: String;
+begin
+  t := Trim(Lowercase(line));
+  Result := False;
+  if Copy(t, 1, Length(key)) <> key then exit;
+  t := Trim(Copy(t, Length(key) + 1, MaxInt));
+  Result := Copy(t, 1, 1) = '=';
+end;
+
+function ReadIni(ini, key: String): String;
+var lines: TArrayOfString; i: Integer;
+begin
+  Result := '';
+  if not LoadStringsFromFile(ini, lines) then exit;
+  for i := 0 to GetArrayLength(lines) - 1 do
+    if IniKeyLine(lines[i], key) then
+    begin
+      Result := Trim(Copy(lines[i], Pos('=', lines[i]) + 1, MaxInt));
+      exit;
+    end;
+end;
+
+procedure SetIni(ini, key, value: String);
+var lines: TArrayOfString; i, n: Integer;
+begin
+  if not LoadStringsFromFile(ini, lines) then SetArrayLength(lines, 0);
+  n := GetArrayLength(lines);
+  for i := 0 to n - 1 do
+    if IniKeyLine(lines[i], key) then
+    begin
+      lines[i] := key + '=' + value;
+      SaveStringsToFile(ini, lines, False);
+      exit;
+    end;
+  SetArrayLength(lines, n + 1);
+  lines[n] := key + '=' + value;
+  SaveStringsToFile(ini, lines, False);
+end;
+
+{ ---- the game's real exe, from the newest SkuDef's set-exe line ---- }
+
+{ steam writes the language ("German", "English (US)") to the EA key for this folder }
+function RegistryLanguage(game: String): String;
+var roots: array of String; names: TArrayOfString; i, j: Integer; dir, lang: String; root: Integer;
+begin
+  Result := '';
+  SetArrayLength(roots, 2);
+  roots[0] := 'SOFTWARE\Electronic Arts\Electronic Arts';
+  roots[1] := 'SOFTWARE\Electronic Arts';
+  if IsWin64 then root := HKLM32 else root := HKLM;
+  for i := 0 to 1 do
+    if RegGetSubkeyNames(root, roots[i], names) then
+      for j := 0 to GetArrayLength(names) - 1 do
+        if RegQueryStringValue(root, roots[i] + '\' + names[j], 'Install Dir', dir) or
+           RegQueryStringValue(root, roots[i] + '\' + names[j], 'InstallPath', dir) then
+          if (Norm(dir) = Norm(game)) and RegQueryStringValue(root, roots[i] + '\' + names[j], 'Language', lang) and (lang <> '') then
+          begin
+            if Pos(' ', lang) > 0 then lang := Copy(lang, 1, Pos(' ', lang) - 1);
+            Result := Lowercase(lang);
+            exit;
+          end;
+end;
+
+{ newest *_<lang>_1.<n>.SkuDef, preferring the registry language, then english }
+function LatestSkuDef(game: String): String;
+var fr: TFindRec; name, pre, lang, want: String; p, ver, best, pass: Integer;
+begin
+  Result := '';
+  want := RegistryLanguage(game);
+  for pass := 0 to 2 do
+  begin
+    best := -1;
+    if FindFirst(AddBackslash(game) + '*_1.*.SkuDef', fr) then
+    try
+      repeat
+        name := ChangeFileExt(fr.Name, '');
+        p := LastPos('_1.', name);
+        if p = 0 then continue;
+        ver := StrToIntDef(Copy(name, p + 3, MaxInt), -1);
+        pre := Copy(name, 1, p - 1);
+        lang := Lowercase(Copy(pre, LastPos('_', pre) + 1, MaxInt));
+        if ((pass = 0) and (lang = want)) or ((pass = 1) and (lang = 'english')) or (pass = 2) then
+          if ver > best then begin best := ver; Result := AddBackslash(game) + fr.Name; end;
+      until not FindNext(fr);
+    finally
+      FindClose(fr);
+    end;
+    if Result <> '' then exit;
+  end;
+end;
+
+function ExePath(game: String): String;
+var lines: TArrayOfString; i: Integer; sku: String;
+begin
+  Result := '';
+  sku := LatestSkuDef(game);
+  if (sku = '') or not LoadStringsFromFile(sku, lines) then exit;
+  for i := 0 to GetArrayLength(lines) - 1 do
+    if Lowercase(Copy(lines[i], 1, 8)) = 'set-exe ' then
+    begin
+      Result := AddBackslash(game) + Trim(Copy(lines[i], 9, MaxInt));
+      exit;
+    end;
+end;
+
+function IniPath(game: String): String;
+var exe: String;
+begin
+  exe := ExePath(game);
+  if exe <> '' then Result := ExtractFilePath(exe) + 'RA3HighFps.ini'
+  else Result := AddBackslash(game) + 'RA3HighFps.ini';
+end;
+
+{ ---- finding games ---- }
+
+function IsGameFolder(dir: String): Boolean;
+var fr: TFindRec;
+begin
+  Result := (dir <> '') and FindFirst(AddBackslash(dir) + '*_1.*.SkuDef', fr);
+  if Result then FindClose(fr);
+end;
+
+function Known(dir: String): Boolean;
+var i: Integer;
+begin
+  Result := False;
+  for i := 0 to GetArrayLength(GameDirs) - 1 do
+    if Norm(GameDirs[i]) = Norm(dir) then begin Result := True; exit; end;
+end;
+
+procedure AddGame(name, dir: String);
+var n: Integer;
+begin
+  if Known(dir) then exit;
+  n := GetArrayLength(GameDirs);
+  SetArrayLength(GameDirs, n + 1);
+  SetArrayLength(GameNames, n + 1);
+  GameDirs[n] := RemoveBackslashUnlessRoot(dir);
+  GameNames[n] := name;
+end;
+
+function GameName(dir: String): String;
+var leaf: String;
+begin
+  leaf := ExtractFileName(RemoveBackslashUnlessRoot(dir));
+  case Lowercase(leaf) of
+    'command and conquer red alert 3': Result := 'Red Alert 3';
+    'command and conquer 3 tiberium wars': Result := 'Tiberium Wars';
+    'command and conquer 3 - kane''s wrath': Result := 'Kane''s Wrath';
+    'command and conquer red alert 3 uprising', 'command and conquer red alert 3 - uprising': Result := 'Red Alert 3 Uprising';
+  else
+    Result := leaf;
+  end;
+end;
+
+procedure FindSteamGames;
+var steam, line, p: String; libs, lines, folders: TArrayOfString; i, j, n, q: Integer;
+begin
+  if not RegQueryStringValue(HKCU, 'Software\Valve\Steam', 'SteamPath', steam) then
+    steam := ExpandConstant('{commonpf32}\Steam');
+  StringChangeEx(steam, '/', '\', True);
+  SetArrayLength(libs, 1);
+  libs[0] := steam;
+  { "path"		"G:\\SteamLibrary" }
+  if LoadStringsFromFile(AddBackslash(steam) + 'steamapps\libraryfolders.vdf', lines) then
+    for i := 0 to GetArrayLength(lines) - 1 do
+    begin
+      line := Trim(lines[i]);
+      if Lowercase(Copy(line, 1, 6)) <> '"path"' then continue;
+      p := Trim(Copy(line, 7, MaxInt));
+      if Copy(p, 1, 1) <> '"' then continue;
+      p := Copy(p, 2, MaxInt);
+      q := Pos('"', p);
+      if q = 0 then continue;
+      p := Copy(p, 1, q - 1);
+      StringChangeEx(p, '\\', '\', True);
+      n := GetArrayLength(libs);
+      SetArrayLength(libs, n + 1);
+      libs[n] := p;
+    end;
+  SetArrayLength(folders, 5);
+  folders[0] := 'Command and Conquer Red Alert 3';
+  folders[1] := 'Command and Conquer 3 Tiberium Wars';
+  folders[2] := 'Command and Conquer 3 - Kane''s Wrath';
+  folders[3] := 'Command and Conquer Red Alert 3 Uprising';
+  folders[4] := 'Command and Conquer Red Alert 3 - Uprising';
+  for j := 0 to GetArrayLength(folders) - 1 do
+    for i := 0 to GetArrayLength(libs) - 1 do
+    begin
+      p := AddBackslash(libs[i]) + 'steamapps\common\' + folders[j];
+      if IsGameFolder(p) then begin AddGame(GameName(p), p); break; end;
+    end;
+end;
+
+{ ea app / origin / disc }
+procedure FindEAGames;
+var roots: array of String; names: TArrayOfString; i, j, r: Integer; key, dir, lbl: String; root: Integer;
+begin
+  SetArrayLength(roots, 3);
+  roots[0] := 'SOFTWARE\Electronic Arts\Electronic Arts';
+  roots[1] := 'SOFTWARE\Electronic Arts';
+  roots[2] := 'SOFTWARE\EA Games';
+  for r := 0 to 1 do
+  begin
+    if r = 0 then begin if IsWin64 then root := HKLM32 else root := HKLM; end
+    else begin if not IsWin64 then continue; root := HKLM64; end;
+    for i := 0 to GetArrayLength(roots) - 1 do
+      if RegGetSubkeyNames(root, roots[i], names) then
+        for j := 0 to GetArrayLength(names) - 1 do
+        begin
+          key := roots[i] + '\' + names[j];
+          if not (RegQueryStringValue(root, key, 'Install Dir', dir) or RegQueryStringValue(root, key, 'InstallPath', dir)) then continue;
+          if not IsGameFolder(dir) or Known(dir) then continue;
+          if not (RegQueryStringValue(root, key, 'ProductName', lbl) or RegQueryStringValue(root, key, 'DisplayName', lbl)) then lbl := names[j];
+          StringChangeEx(lbl, 'Command & Conquer ', '', True);
+          AddGame(lbl + ' (EA app)', dir);
+        end;
+  end;
+end;
+
+{ ---- page ---- }
+
+procedure ZoomCheckClick(Sender: TObject);
+begin
+  ZoomBox.Enabled := ZoomCheck.Checked;
+end;
+
+procedure AddFolderClick(Sender: TObject);
+var dir: String;
+begin
+  dir := '';
+  if not BrowseForFolder('Pick the game''s install folder (the one with the .SkuDef files, e.g. ...\Red Alert 3)', dir, False) then exit;
+  if not IsGameFolder(dir) then
+  begin
+    MsgBox('That doesn''t look like a supported game folder (no .SkuDef files in it).', mbError, MB_OK);
+    exit;
+  end;
+  if Known(dir) then exit;
+  AddGame(GameName(dir), dir);
+  GameList.AddCheckBox(GameNames[GetArrayLength(GameNames) - 1], GameDirs[GetArrayLength(GameDirs) - 1], 0, True, True, False, False, nil);
+end;
+
+procedure InitializeWizard;
+var i, f, pick, hz: Integer; lbl: TNewStaticText; btn: TNewButton; s, z: String;
+begin
+  FindSteamGames;
+  FindEAGames;
+
+  GamePage := CreateCustomPage(wpWelcome, 'Install C&C FPS Unlocker', 'Pick your games and a frame rate.');
+
+  lbl := TNewStaticText.Create(GamePage);
+  lbl.Parent := GamePage.Surface;
+  if GetArrayLength(GameDirs) > 0 then lbl.Caption := 'Install for these games:'
+  else lbl.Caption := 'No games found automatically. Use "Add game folder..." below.';
+
+  GameList := TNewCheckListBox.Create(GamePage);
+  GameList.Parent := GamePage.Surface;
+  GameList.SetBounds(0, lbl.Top + lbl.Height + ScaleY(6), GamePage.SurfaceWidth, ScaleY(96));
+  for i := 0 to GetArrayLength(GameDirs) - 1 do
+    GameList.AddCheckBox(GameNames[i], GameDirs[i], 0, True, True, False, False, nil);
+
+  btn := TNewButton.Create(GamePage);
+  btn.Parent := GamePage.Surface;
+  btn.Caption := 'Add game folder...';
+  btn.SetBounds(0, GameList.Top + GameList.Height + ScaleY(6), ScaleX(130), ScaleY(23));
+  btn.OnClick := @AddFolderClick;
+
+  lbl := TNewStaticText.Create(GamePage);
+  lbl.Parent := GamePage.Surface;
+  lbl.Caption := 'Frame rate:';
+  lbl.Top := btn.Top + btn.Height + ScaleY(18);
+
+  hz := MonitorHz;
+  FpsBox := TNewComboBox.Create(GamePage);
+  FpsBox.Parent := GamePage.Surface;
+  FpsBox.Style := csDropDownList;
+  FpsBox.SetBounds(ScaleX(90), lbl.Top - ScaleY(4), ScaleX(150), ScaleY(23));
+  for f := 2 to 16 do
+  begin
+    s := IntToStr(f * 15) + ' fps';
+    if f = 16 then s := s + ' (experimental)';
+    FpsBox.Items.Add(s);
+  end;
+  pick := 0;
+  for i := 0 to GetArrayLength(GameDirs) - 1 do
+    if pick = 0 then pick := StrToIntDef(ReadIni(IniPath(GameDirs[i]), 'fps'), 0);
+  if (pick < 30) or (pick > 240) or (pick mod 15 <> 0) then
+  begin
+    pick := hz div 15 * 15;
+    if pick < 30 then pick := 30;
+    if pick > 240 then pick := 240;
+  end;
+  FpsBox.ItemIndex := pick div 15 - 2;
+
+  lbl := TNewStaticText.Create(GamePage);
+  lbl.Parent := GamePage.Surface;
+  lbl.Caption := '(your monitor: ' + IntToStr(hz) + ' Hz)';
+  lbl.Font.Color := clGrayText;
+  lbl.SetBounds(FpsBox.Left + FpsBox.Width + ScaleX(10), FpsBox.Top + ScaleY(4), ScaleX(150), ScaleY(16));
+
+  ZoomCheck := TNewCheckBox.Create(GamePage);
+  ZoomCheck.Parent := GamePage.Surface;
+  ZoomCheck.Caption := 'Red Alert 3: let the camera zoom out further (skirmish and campaign)';
+  ZoomCheck.SetBounds(0, FpsBox.Top + FpsBox.Height + ScaleY(12), GamePage.SurfaceWidth - ScaleX(90), ScaleY(17));
+  ZoomCheck.OnClick := @ZoomCheckClick;
+
+  ZoomBox := TNewComboBox.Create(GamePage);
+  ZoomBox.Parent := GamePage.Surface;
+  ZoomBox.Style := csDropDownList;
+  ZoomBox.SetBounds(GamePage.SurfaceWidth - ScaleX(80), ZoomCheck.Top - ScaleY(3), ScaleX(80), ScaleY(23));
+  ZoomBox.Items.Add('1.25x');
+  ZoomBox.Items.Add('1.5x');
+  ZoomBox.Items.Add('1.75x');
+  ZoomBox.ItemIndex := 1;
+  for i := 0 to GetArrayLength(GameDirs) - 1 do
+  begin
+    z := ReadIni(IniPath(GameDirs[i]), 'zoom');
+    if (z = '1.25') or (z = '1.5') or (z = '1.75') then
+    begin
+      ZoomCheck.Checked := True;
+      if z = '1.25' then ZoomBox.ItemIndex := 0;
+      if z = '1.75' then ZoomBox.ItemIndex := 2;
+      break;
+    end;
+  end;
+  ZoomBox.Enabled := ZoomCheck.Checked;
+end;
+
+{ ---- installing ---- }
+
+function InstallGame(game: String; fps: Integer; zoom: String; var err: String): Boolean;
+var exe, dir, proxy, ini: String; lines: TArrayOfString;
+begin
+  Result := False;
+  exe := ExePath(game);
+  if exe = '' then begin err := 'couldn''t find the game''s exe (SkuDef)'; exit; end;
+  dir := ExtractFilePath(exe);
+  if Lowercase(ExtractFileExt(exe)) = '.game' then proxy := 'd3d9.dll' else proxy := 'dinput8.dll';   { ra3 : tw/kw }
+  ExtractTemporaryFile(proxy);
+  ExtractTemporaryFile('CnCFpsUnlocker.dll');
+  if not FileCopy(ExpandConstant('{tmp}\') + proxy, dir + proxy, False) or
+     not FileCopy(ExpandConstant('{tmp}\CnCFpsUnlocker.dll'), dir + 'CnCFpsUnlocker.dll', False) then
+  begin
+    err := 'couldn''t write to ' + dir + ' (is the game running?)';
+    exit;
+  end;
+  ini := dir + 'RA3HighFps.ini';
+  if not FileExists(ini) then
+  begin
+    SetArrayLength(lines, 1);
+    lines[0] := '; C&C FPS Unlocker settings (fps: multiple of 15, 30-240; zoom: ra3 only, 1 = off)';
+    SaveStringsToFile(ini, lines, False);
+  end;
+  SetIni(ini, 'fps', IntToStr(fps));
+  SetIni(ini, 'zoom', zoom);
+  if FileExists(dir + 'RA3HighFps.exe') then OldLauncher := True;
+  Result := True;
+end;
+
+function NextButtonClick(CurPageID: Integer): Boolean;
+var i, fps: Integer; zoom, err: String; any: Boolean;
+begin
+  Result := True;
+  if CurPageID <> GamePage.ID then exit;
+  any := False;
+  for i := 0 to GameList.Items.Count - 1 do
+    if GameList.Checked[i] then any := True;
+  if not any then
+  begin
+    MsgBox('Tick at least one game.', mbInformation, MB_OK);
+    Result := False;
+    exit;
+  end;
+  fps := (FpsBox.ItemIndex + 2) * 15;
+  zoom := '1';
+  if ZoomCheck.Checked then
+    case ZoomBox.ItemIndex of
+      0: zoom := '1.25';
+      1: zoom := '1.5';
+      2: zoom := '1.75';
+    end;
+  Done := '';
+  OldLauncher := False;
+  for i := 0 to GameList.Items.Count - 1 do
+    if GameList.Checked[i] then
+    begin
+      if not InstallGame(GameList.ItemSubItem[i], fps, zoom, err) then
+      begin
+        MsgBox('Couldn''t install for ' + GameList.ItemCaption[i] + ':' + #13#10#13#10 + err, mbError, MB_OK);
+        Result := False;
+        exit;
+      end;
+      Done := Done + #13#10 + '  ' + GameList.ItemCaption[i];
+    end;
+  Done := 'Installed at ' + IntToStr(fps) + ' fps for:' + #13#10 + Done + #13#10#13#10 +
+          'Just start the games like you normally do. Run this setup again to change the fps.';
+  if OldLauncher then
+    Done := Done + #13#10#13#10 + 'Used an older version? You can clear the old Launch Options in Steam ' +
+            '(right-click the game > Properties). It still works if you leave it.';
+end;
+
+procedure CurPageChanged(CurPageID: Integer);
+begin
+  if CurPageID = wpFinished then
+    WizardForm.FinishedLabel.Caption := Done;
+end;

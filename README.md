@@ -10,7 +10,7 @@ These games are locked to 30 fps and if you just unlock them the whole game spee
 
 Two ways, pick whichever you like. Either way there's no launch option to set, you just play the game like normal (Steam, EA app, disc, whatever).
 
-**With the setup:** grab `CnC-FPS-Unlocker-Setup.zip` from [Releases](../../releases), unzip it and run `CnC-FPS-Unlocker-Setup.exe`. It finds your games, pick a frame rate and hit **Install**. If it doesn't find a game (EA app, Origin, disc in a weird spot) use **Add game folder...** and pick the game's install folder. If your games are in Program Files you might need to run it as administrator.
+**With the setup:** grab `CnC-FPS-Unlocker-Setup.exe` from [Releases](../../releases) and run it. It finds your games, pick a frame rate and hit **Next**. If it doesn't find a game (EA app, Origin, disc in a weird spot) use **Add game folder...** and pick the game's install folder.
 
 **By hand, no exe at all:** grab `CnC-FPS-Unlocker.zip` from [Releases](../../releases) and copy the three files for your game next to the game's actual exe:
 
@@ -43,7 +43,7 @@ Before v1.6 that wasn't true. RA3 ran about 33% fast at 120 and way faster at 24
 
 ## Extras
 
-The setup has an **Extras...** button for stuff that isn't about frame rate. All off unless you turn them on.
+Stuff that isn't about frame rate. Off unless you turn it on in the setup (or the ini).
 
 - **Camera zoom-out (RA3):** lets you zoom out further (1.25x, 1.5x or 1.75x). Only in skirmish and campaign, online and LAN always use normal zoom so nobody gets an advantage. Past 1.75x the ground stops drawing at the top of the screen so that's the max for now
 
@@ -51,7 +51,7 @@ The setup has an **Extras...** button for stuff that isn't about frame rate. All
 
 - It doesn't touch any game files. The game loads the dll from its own folder like any other dll mod, the dll changes a few timing values in the game's memory while it's starting, and that's it. No network code, nothing runs outside the game
 - The setup is optional and only copies files. If you don't want to run an exe, install by hand
-- Everything's built from the source here: [`src/Unlocker.cs`](src/Unlocker.cs) (the fixes, C#), [`src/Setup.cs`](src/Setup.cs) (the setup) and [`dll/proxy.c`](dll/proxy.c) (the small `d3d9.dll` / `dinput8.dll`, about 150 lines). Run `build-from-source.bat` to build the C# parts yourself with the compiler that comes with Windows, and `dll/build.bat` for the dlls (needs MinGW)
+- Everything's built from the source here: [`src/Unlocker.cs`](src/Unlocker.cs) (the fixes, C#), [`installer/setup.iss`](installer/setup.iss) (the setup, made with [Inno Setup](https://jrsoftware.org/isinfo.php)) and [`dll/proxy.c`](dll/proxy.c) (the small `d3d9.dll` / `dinput8.dll`, about 150 lines). Run `build-from-source.bat` to build the dll yourself with the C# compiler that comes with Windows, and `dll/build.bat` for the dlls (needs MinGW)
 
 ## Online
 
