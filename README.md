@@ -8,31 +8,24 @@ These games are locked to 30 fps and if you just unlock them the whole game spee
 
 ## Install
 
-1. Grab `CnC-FPS-Unlocker-Setup.exe` from [Releases](../../releases)
-2. Run it. It finds your games, untick any you don't want, pick a frame rate and hit **Install**
-3. It gives you one line per game. In Steam right-click the game > **Properties** > **Launch Options** and paste it in (there's a Copy button). Only have to do this once
-4. Play from Steam like normal
+Two ways, pick whichever you like. Either way there's no launch option to set, you just play the game like normal (Steam, EA app, disc, whatever).
 
-To change fps later just run the setup again, or edit `RA3HighFps.ini` in the game folder.
-To uninstall, clear the launch options box in Steam.
+**With the setup:** grab `CnC-FPS-Unlocker-Setup.zip` from [Releases](../../releases), unzip it and run `CnC-FPS-Unlocker-Setup.exe`. It finds your games, pick a frame rate and hit **Install**. If it doesn't find a game (EA app, Origin, disc in a weird spot) use **Add game folder...** and pick the game's install folder. If your games are in Program Files you might need to run it as administrator.
 
-Tested on the **Steam** versions (RA3 1.13, Tiberium Wars 1.10, Kane's Wrath 1.3).
-
-**EA app / Origin / other non-Steam copies:** if the setup doesn't find your game, use **Add game folder...** and pick the game's install folder. Non-Steam games get the drop-in version installed (see below), so there's no launch option to set, just start the game like normal. If the game folder is in Program Files you might need to run the setup as administrator.
-
-### Drop-in version (no installer, no exe) - testing
-
-This one's still being tested on non-Steam copies so treat it as a beta for now. If something's off open an issue.
-
-For non-Steam copies or if you'd rather just copy files: grab `CnC-FPS-Unlocker-DropIn.zip` from [Releases](../../releases) and put the three files for your game next to the game's actual exe:
+**By hand, no exe at all:** grab `CnC-FPS-Unlocker.zip` from [Releases](../../releases) and copy the three files for your game next to the game's actual exe:
 
 | Game | Files | Put them in |
 |---|---|---|
 | Red Alert 3 (1.12 / 1.13) | `d3d9.dll`, `CnCFpsUnlocker.dll`, `RA3HighFps.ini` | `<RA3>\Data\` |
 | Tiberium Wars (1.10) | `dinput8.dll`, `CnCFpsUnlocker.dll`, `RA3HighFps.ini` | `<TW>\RetailExe\1.10\` |
 | Kane's Wrath (1.3) | `dinput8.dll`, `CnCFpsUnlocker.dll`, `RA3HighFps.ini` | `<KW>\RetailExe\1.3\` |
+| Kane's Wrath (1.02, EA app / Origin / disc) - beta | `dinput8.dll`, `CnCFpsUnlocker.dll`, `RA3HighFps.ini` | `<KW>\RetailExe\1.2\` |
 
-Then launch the game however you normally do. Settings are in `RA3HighFps.ini` (the zip has ready-made ones for each fps in `FPS presets`), and to uninstall just delete the dll. If it doesn't work on your copy, open an issue with your `%TEMP%RA3HighFps.log`, it has a report that helps me add support. The game loads the dll from its own folder, it passes everything through to the real Windows one and does the same fixes as the normal version. Works with Tacitus, and having both this and the Steam launch option is fine, it only patches once. Source is in [`dll/`](dll).
+To change the fps run the setup again or edit `RA3HighFps.ini` (the zip has ready-made ones for each fps in `FPS presets`). To uninstall delete `d3d9.dll` / `dinput8.dll`.
+
+**Coming from v1.6 or older?** You don't need the Steam launch option anymore, clear it (right-click the game > Properties > Launch Options). Leaving it is harmless, it only patches once.
+
+Tested on the **Steam** versions (RA3 1.13, Tiberium Wars 1.10, Kane's Wrath 1.3). If it doesn't work on your copy, open an issue with your `%TEMP%\RA3HighFps.log`, it has a report that helps me add support.
 
 ## Picking a frame rate
 
@@ -56,9 +49,9 @@ The setup has an **Extras...** button for stuff that isn't about frame rate. All
 
 ## Is it safe?
 
-- It doesn't touch any game files. It starts the normal game, changes a few timing values in memory while it's starting, and that's it
-- Source is right here in `src/RA3HighFps.cs`, plain C#. If you don't trust the exe (fair enough) download the repo and run `build-from-source.bat` to build it yourself. It uses the C# compiler that already comes with Windows and builds both `RA3HighFps.exe` and the `CnCFpsUnlocker.dll` from the drop-in zip (same source file, the dll is just the library version). The small `d3d9.dll` / `dinput8.dll` are built from [`dll/proxy.c`](dll/proxy.c), about 150 lines, with `dll/build.bat`
-- Some antivirus programs don't like unsigned exes that mess with another program's memory. That's why the source is public
+- It doesn't touch any game files. The game loads the dll from its own folder like any other dll mod, the dll changes a few timing values in the game's memory while it's starting, and that's it. No network code, nothing runs outside the game
+- The setup is optional and only copies files. If you don't want to run an exe, install by hand
+- Everything's built from the source here: [`src/Unlocker.cs`](src/Unlocker.cs) (the fixes, C#), [`src/Setup.cs`](src/Setup.cs) (the setup) and [`dll/proxy.c`](dll/proxy.c) (the small `d3d9.dll` / `dinput8.dll`, about 150 lines). Run `build-from-source.bat` to build the C# parts yourself with the compiler that comes with Windows, and `dll/build.bat` for the dlls (needs MinGW)
 
 ## Online
 
@@ -68,7 +61,7 @@ A C&C:Online admin told me it won't get anyone banned. Only the rendering change
 
 These games use the number 30 for two different things: how often they draw a frame, and as a clock for effects (particles count time in 30ths of a second). Old unlock methods change both, so particles get birth times from the "future" and you get huge white or colored flashes whenever something shoots, especially near water. This only changes the first one.
 
-It finds what to patch by what the code does instead of hardcoded addresses, which is why one exe works for all three games.
+It finds what to patch by what the code does instead of hardcoded addresses, which is why the same dll works for all three games.
 
 The full story, including how I tracked down the flicker with a frame by frame graphics capture, is in [docs/TECHNICAL.md](docs/TECHNICAL.md).
 
@@ -80,29 +73,7 @@ The full story, including how I tracked down the flicker with a frame by frame g
 
 ## Older versions and mods
 
-Easiest way: tick **"Show a mod & version picker when the game starts"** in the setup. Every time you launch you get a little window to pick a mod (it lists what's in `Documents\Red Alert 3\Mods`, or browse to a `.skudef`) and a game version. On "Auto" it uses whatever version the mod wants, so mods that need 1.12 just work. It remembers what you picked last.
-
-The normal RA3 launcher options still work too, put them **after** `%command%` in the Steam launch options:
-
-- `-runver 1.12` runs 1.12 instead of the newest version (lots of mods need 1.12)
-- `-modConfig "C:\path\to\mod\mod.skudef"` loads a mod
-
-Like this for a mod that needs 1.12:
-
-```
-"...\RA3HighFps.exe" %command% -runver 1.12 -modConfig "C:\path\to\mod\mod.skudef"
-```
-
-`-ui` (the old launcher window) doesn't work since the unlocker replaces that launcher, use the options above instead. Mod launchers that start the game themselves skip Steam, so the unlocker won't run with those.
-
-## Advanced options
-
-These go in the Steam launch options, before `%command%`:
-
-- `--fps 90` overrides the ini for one launch
-- `--lang german` forces a language. Normally it uses whatever language Steam installed, then your Windows language
-- `--pfx off` lets RA3's particles simulate faster than 30hz (a bit smoother, not tested much)
-- `--check "<path to the game's .game/.dat exe>"` dry run, writes a report of what it would patch. Handy if an update breaks it
+Since the game loads the dll itself, mods and older versions just work the normal way: `-ui` (the RA3 launcher window), `-runver 1.12`, `-modConfig "...\mod.skudef"` and mod launchers like GenEvo's all still get the fps fix. RA3 1.12 and 1.13 both live in `Data\`, so one install covers both.
 
 ## Credits
 

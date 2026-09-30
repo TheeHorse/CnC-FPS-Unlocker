@@ -2,8 +2,7 @@
  * d3d9.dll for ra3, dinput8.dll for tw/kw. forwards to the real dll, hooks the game's entry
  * point and runs CnCFpsUnlocker.dll (same patches as the launcher) before the game starts.
  *
- * tcc -shared -DPROXY_D3D9 -o d3d9.dll proxy.c
- * tcc -shared -DPROXY_DINPUT8 -o dinput8.dll proxy.c
+ * build with 32-bit mingw gcc, see build.bat
  */
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
@@ -23,8 +22,9 @@
 
 #define PTR(name) void *real_##name;
 EXPORTS(PTR)
-#define STUB(name) __declspec(dllexport) void name(void) \
-    { __asm__("movl %ebp, %esp\n popl %ebp\n jmp *real_" #name); }
+/* naked = no prologue, so the jmp leaves args and return address exactly as the caller set them */
+#define STUB(name) __declspec(dllexport) __attribute__((naked)) void name(void) \
+    { __asm__("jmp *_real_" #name); }
 EXPORTS(STUB)
 
 static HMODULE real_dll;
