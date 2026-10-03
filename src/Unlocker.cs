@@ -745,7 +745,8 @@ static class Program
                 if (j == pat.Length) list.Add(ImageBase + (uint)(i + pat.Length - 1));
             }
         }
-        return list.Count == 2 ? list : new List<uint>();
+        // ra3 has 2, uprising 3 (an extra copy with a "force" argument), all the same check on the same field
+        return list.Count == 2 || list.Count == 3 ? list : new List<uint>();
     }
 
     static void PatchInterpWindow(IntPtr proc, List<uint> sites, int fps)
@@ -919,13 +920,14 @@ static class Program
         }
     }
 
-    // soviet/empire construction (StructureUnpackUpdate). start + duration are in 30fps frames but
+    // soviet/empire construction (StructureUnpackUpdate). the module's field offsets differ in uprising (wildcards).
+    // start + duration are in 30fps frames but
     // "now" is getFrame() = drawn frames, so at 120 it's 4x ahead and builds pop in instantly.
     // use the logic tick through the same conversion instead
     const string UnpackPattern =
-        "8B 35 ?? ?? ?? ?? 8B 57 3C D9 86 BC 01 00 00 55 D9 5C 24 14 52 8B CE E8 ?? ?? ?? ?? D8 0D ?? ?? ?? ?? " +
-        "D9 7C 24 12 8B CE 0F B7 44 24 12 D8 0D ?? ?? ?? ?? 0D 00 0C 00 00 89 44 24 18 8B 47 40 D8 4C 24 14 50 " +
-        "D9 6C 24 1C DF 7C 24 1C 8B 6C 24 1C D9 6C 24 16 E8 ?? ?? ?? ?? D8 0D ?? ?? ?? ?? 8B 4F 38 D9 7C 24 12 " +
+        "8B 35 ?? ?? ?? ?? 8B 57 ?? D9 86 BC 01 00 00 55 D9 5C 24 14 52 8B CE E8 ?? ?? ?? ?? D8 0D ?? ?? ?? ?? " +
+        "D9 7C 24 12 8B CE 0F B7 44 24 12 D8 0D ?? ?? ?? ?? 0D 00 0C 00 00 89 44 24 18 8B 47 ?? D8 4C 24 14 50 " +
+        "D9 6C 24 1C DF 7C 24 1C 8B 6C 24 1C D9 6C 24 16 E8 ?? ?? ?? ?? D8 0D ?? ?? ?? ?? 8B 4F ?? D9 7C 24 12 " +
         "0F B7 44 24 12 D8 0D ?? ?? ?? ?? 0D 00 0C 00 00 89 44 24 18 51 D8 4C 24 18 8B CE D9 6C 24 1C DF 7C 24 1C " +
         "8B 5C 24 1C D9 6C 24 16 E8 ?? ?? ?? ?? D8 0D ?? ?? ?? ?? 8B 0D ?? ?? ?? ?? D9 7C 24 12 0F B7 44 24 12 " +
         "D8 0D ?? ?? ?? ?? 0D 00 0C 00 00 89 44 24 18 8B 01 D8 4C 24 14 D9 6C 24 18 DF 7C 24 18 8B 54 24 18 " +
