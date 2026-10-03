@@ -17,6 +17,7 @@ Two ways, pick whichever you like. Either way there's no launch option to set, y
 | Game | Files | Put them in |
 |---|---|---|
 | Red Alert 3 (1.12 / 1.13) | `d3d9.dll`, `CnCFpsUnlocker.dll`, `RA3HighFps.ini` | `<RA3>\Data\` |
+| Red Alert 3 Uprising | `d3d9.dll`, `CnCFpsUnlocker.dll`, `RA3HighFps.ini` | `<Uprising>\Data\` |
 | Tiberium Wars (1.10) | `dinput8.dll`, `CnCFpsUnlocker.dll`, `RA3HighFps.ini` | `<TW>\RetailExe\1.10\` |
 | Kane's Wrath (1.3) | `dinput8.dll`, `CnCFpsUnlocker.dll`, `RA3HighFps.ini` | `<KW>\RetailExe\1.3\` |
 | Kane's Wrath (1.02, EA app / Origin / disc) - beta | `dinput8.dll`, `CnCFpsUnlocker.dll`, `RA3HighFps.ini` | `<KW>\RetailExe\1.2\` |
