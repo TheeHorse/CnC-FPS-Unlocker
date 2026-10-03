@@ -76,7 +76,7 @@ Since the game loads the dll itself, mods and older versions just work the norma
 ## Credits
 
 - [red-alert-3-60fps-mod](https://github.com/isma3iloiso/red-alert-3-60fps-mod) by isma3iloiso, their patch notes pointed me at the render fps value in the first place
-- [CNCStuff/cnc3_fps_patch](https://github.com/CNCStuff/cnc3_fps_patch), which found some of the C&C3 fixes (frame limiter, scroll, anim timing)
+- [CNCStuff/cnc3_fps_patch](https://github.com/CNCStuff/cnc3_fps_patch), which found many of the C&C3 fixes (frame limiter, scroll, numpad camera, effects, anim timing)
 - [apitrace](https://github.com/apitrace/apitrace), couldn't have found the flicker without it
 - Not affiliated with EA. Command & Conquer, Red Alert and Tiberium are trademarks of Electronic Arts
 

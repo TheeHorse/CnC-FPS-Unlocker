@@ -95,6 +95,22 @@ RA3 also only interpolated a unit for 6 drawn frames after its last logic update
 
 Edge scroll, arrow keys and right-drag all add a step every drawn frame, so at 120 the camera went 4x as fast. They all end up in the tactical view's `scrollBy(Coord2D*)` (vtable slot `0xC155B8` in 1.13, found by a byte pattern of the function and then its one vtable reference). That slot now points at a little wrapper that multiplies the delta by `30 / fps` and jumps to the original, so what the view stores stays consistent too. TW and KW get the same wrapper on their scrollBy (TW `0x82F635`, CNCStuff/cnc3_fps_patch had already found it).
 
+## Numpad zoom and rotate (all three games)
+
+Held zoom does `z = 0.96 * z - 1` (in) or `z = 1.05 * z + 1` (out) every drawn frame. The held-key behaviors now call a copy of the view's zoomIn/zoomOut with `m^(30/fps)` and `c * (1 - m') / (1 - m)`, which gives the same zoom per second. The mouse wheel keeps the originals (one step per notch). Held rotate gets its per-frame amount times `30 / fps`: RA3 reads it from a constant, TW and KW from GlobalData, so there it goes through a small stub. TW/KW signatures are CNCStuff/cnc3_fps_patch's.
+
+## TW and KW effects
+
+Ported from CNCStuff/cnc3_fps_patch, same signatures:
+
+- camera move and laser steps add 1/30 per drawn frame (same constant as the model step), now 1/fps
+- tracers, cloud/lightning and Anim2D read the absolute frame number but their art is in 30 fps frames. They get `ceil(getFrame * 30 / fps)` (getFrame is slot `78h` here, `74h` in RA3)
+- CPU particles step once per call, throttled to 30 calls a second like RA3
+- ability placement circles throb with `throbTime * framesPerMs` frames against the drawn frame, so that operand gets `fps / 1000`
+- camera shake decays `*0.75` per frame, now `0.75^(30/fps)`
+
+GPU particle expiry and the other "live fps" fixes in cnc3_fps_patch aren't needed here, the unlocker never changes the game's own fps variable.
+
 ## Fades (RA3)
 
 Stuff that fades in or out (dying units, cloaking, some effects) gets its fade length in 30 fps frames via `ms * framesPerMs`, but stamps the start and checks progress with `GameClient::getFrame()`, the real drawn frame count. So at 120 fades finished 4x early. The 5 places that touch that clock (fade setters at `0x543AC0`/`0x543B20`, two more that restamp `[obj+338h]`, and the per-frame update at `0x557F70`) now get `ceil(getFrame * 30 / fps)`, same 30hz frame number the Anim2D fix uses.

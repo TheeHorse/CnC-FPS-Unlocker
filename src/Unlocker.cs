@@ -122,12 +122,16 @@ static class Program
         SchedSite schedSite = FindScheduler(img);
         bool sched = schedSite != null && On("sched");   // skip=sched falls back to the plain fps redirect
         HeldCamera held = FindHeldCamera(img);
+        Cnc3Fx fx = FindCnc3Fx(img, modelStep);
+        if (pfxSite == 0 && fx.PfxSite != 0) { pfxSite = fx.PfxSite; pfxSim = fx.PfxSim; }   // tw / kw
         // for the log: which fixes this exe has, so reports from unknown builds say what's missing
         var have = new[] {
             new { n = "sched", ok = schedSite != null }, new { n = "scroll", ok = scrollSlot != 0 }, new { n = "camerakeys", ok = held != null },
             new { n = "interp", ok = interpWindow.Count > 0 }, new { n = "limiter", ok = limiter != 0 }, new { n = "construction", ok = unpack != 0 },
             new { n = "anim2d", ok = anim2d.Count > 0 }, new { n = "models", ok = modelStep != 0 }, new { n = "particles", ok = pfxSite != 0 },
-            new { n = "fades", ok = fades.Count > 0 }, new { n = "zoom", ok = zoomSite != 0 } };
+            new { n = "fades", ok = fades.Count > 0 }, new { n = "zoom", ok = zoomSite != 0 },
+            new { n = "camsteps", ok = fx.CameraStep != 0 }, new { n = "fxframes", ok = fx.Frame5.Count > 0 }, new { n = "throb", ok = fx.Throb != 0 },
+            new { n = "shake", ok = fx.Shake != 0 } };
         found = "found: " + string.Join(" ", have.Where(h => h.ok).Select(h => h.n)) + " | missing: " + string.Join(" ", have.Where(h => !h.ok).Select(h => h.n));
 
         // +0 fps, +8 particle accum, +40 stubs
@@ -152,11 +156,9 @@ static class Program
         if (On("limiter") && limiter != 0) PatchLimiterRounding(proc, limiter, limiterRA3, (uint)mem + 0x28, (uint)mem + 0x2C, (uint)mem + 0x280);
         if (On("construction") && unpack != 0) PatchUnpack(proc, img, unpack, (uint)mem + 0x200, sched ? (uint)mem + 0x3C : 0, (uint)mem + 0x4E0);   // construction
         if (On("anim2d") && anim2d.Count > 0) PatchAnim2D(proc, img, anim2d, (uint)mem, (uint)mem + 0x100);
-        if (On("models") && modelStep != 0)   // 1/fps instead of 1/30
-        {
-            Write(proc, (uint)mem + 0x10, BitConverter.GetBytes(1f / fps));
-            Redirect(proc, new List<uint> { modelStep }, (uint)mem + 0x10);
-        }
+        Write(proc, (uint)mem + 0x10, BitConverter.GetBytes(1f / fps));   // 1/fps: model, camera and laser steps
+        PatchCnc3Fx(proc, fx, fps, (uint)mem, (uint)mem + 0x10, (uint)mem + 0xD00, (uint)mem + 0xD40);
+        if (On("models") && modelStep != 0) Redirect(proc, new List<uint> { modelStep }, (uint)mem + 0x10);   // 1/fps instead of 1/30
         if (On("particles") && throttlePfx && pfxSite != 0)
             ThrottleParticles(proc, pfxSite, pfxSim, (uint)mem, (uint)mem + 8, (uint)mem + 0x40);
         FlushCode(proc);
@@ -168,7 +170,8 @@ static class Program
             " | limiter " + hex(new[] { limiter }) + " | scroll " + hex(new[] { scrollSlot }) + " | zoom " + hex(new[] { zoomSite }) +
             " | interp " + hex(interpWindow) + " | models " + hex(new[] { modelStep }) + " | particles " + hex(new[] { pfxSite }) +
             (schedSite != null ? " | sched " + hex(new[] { schedSite.Advance, schedSite.Exit }) : "") +
-            (held != null ? " | camerakeys " + hex(new[] { held.ZoomIn, held.ZoomOut, held.Rotate }) : "");
+            (held != null ? " | camerakeys " + hex(new[] { held.ZoomIn, held.ZoomOut, held.Rotate }) : "") +
+            " | fx " + hex(fx.Frame5.Concat(new[] { fx.TracerUpdate, fx.CameraStep, fx.LaserStep, fx.Throb, fx.Shake }));
         return sites;
     }
 
@@ -657,7 +660,14 @@ static class Program
     const string ViewZoomOutPattern = "56 8B F1 57 8B 3E 8B 87 ?? ?? 00 00 FF D0 D8 0D ?? ?? ?? ?? 8B 97 ?? ?? 00 00 51 D8 05 ?? ?? ?? ?? 8B CE D9 1C 24 FF D2 5F 5E C3";
     const string HeldRotatePattern = "80 7C 24 08 00 74 ?? F3 0F 10 41 04 8B 44 24 10 F3 0F 59 05 ?? ?? ?? ?? F3 0F 58 00 F3 0F 11 00 C2 10 00";
 
-    class HeldCamera { public uint ZoomIn, ZoomOut, ViewIn, ViewOut, Rotate; }
+    // tw / kw: same idea, other registers. rotate speed comes from GlobalData instead of a constant
+    const string HeldZoomPatternCnc3 = "80 7C 24 08 00 74 0E 8B 0D ?? ?? ?? ?? 8B 01 FF 90 ?? 01 00 00 C2 10 00";
+    const string ViewZoomInPatternCnc3 = "56 57 8B F9 8B 37 FF 96 ?? ?? 00 00 D8 0D ?? ?? ?? ?? 51 8B CF D8 25 ?? ?? ?? ?? D9 1C 24 FF 96 ?? ?? 00 00 5F 5E C3";
+    const string ViewZoomOutPatternCnc3 = "56 57 8B F9 8B 37 FF 96 ?? ?? 00 00 D8 0D ?? ?? ?? ?? 51 8B CF D8 05 ?? ?? ?? ?? D9 1C 24 FF 96 ?? ?? 00 00 5F 5E C3";
+    const string HeldRotatePatternCnc3 = "80 7C 24 08 00 74 1E A1 ?? ?? ?? ?? F3 0F 10 80 ?? ?? 00 00 8B 44 24 10 F3 0F 59 41 04 F3 0F 58 00 F3 0F 11 00 C2 10 00";
+
+    // Cnc3: tw/kw layout. MOff/COff = where the zoom step's two float operands sit in the view function
+    class HeldCamera { public uint ZoomIn, ZoomOut, ViewIn, ViewOut, Rotate; public bool Cnc3; public int Len = 43, MOff = 16, COff = 29; }
 
     static List<uint> FindAll(byte[] img, string pattern)
     {
@@ -682,19 +692,104 @@ static class Program
     static HeldCamera FindHeldCamera(byte[] img)
     {
         Func<uint, int, uint> dw = (va, off) => BitConverter.ToUInt32(img, (int)(va - ImageBase) + off);
+        bool cnc3 = false;
         var pair = FindAll(img, HeldZoomPattern);
-        if (pair.Count != 2 || pair[1] != pair[0] + 0x20 || dw(pair[0], 9) != dw(pair[1], 9) || dw(pair[1], 17) != dw(pair[0], 17) + 4)
-            return null;   // zoom in, then zoom out 0x20 later: same view, next slot
-        var h = new HeldCamera { ZoomIn = pair[0], ZoomOut = pair[1], ViewIn = FindUnique(img, ViewZoomInPattern), ViewOut = FindUnique(img, ViewZoomOutPattern), Rotate = FindUnique(img, HeldRotatePattern) };
+        if (pair.Count == 0) { pair = FindAll(img, HeldZoomPatternCnc3); cnc3 = true; }
+        int gap = cnc3 ? 0x18 : 0x20;
+        if (pair.Count != 2 || pair[1] != pair[0] + gap || dw(pair[0], 9) != dw(pair[1], 9) || dw(pair[1], 17) != dw(pair[0], 17) + 4)
+            return null;   // zoom in, then zoom out right after: same view, next slot
+        var h = cnc3
+            ? new HeldCamera { ZoomIn = pair[0], ZoomOut = pair[1], ViewIn = FindUnique(img, ViewZoomInPatternCnc3), ViewOut = FindUnique(img, ViewZoomOutPatternCnc3),
+                               Rotate = FindUnique(img, HeldRotatePatternCnc3), Cnc3 = true, Len = 39, MOff = 14, COff = 23 }
+            : new HeldCamera { ZoomIn = pair[0], ZoomOut = pair[1], ViewIn = FindUnique(img, ViewZoomInPattern), ViewOut = FindUnique(img, ViewZoomOutPattern), Rotate = FindUnique(img, HeldRotatePattern) };
         if (h.ViewIn == 0 || h.ViewOut == 0 || h.Rotate == 0) return null;
         // the stock steps, so we know we have the right functions
-        if (Math.Abs(FloatAt(img, dw(h.ViewIn, 16)) - 0.96f) > 1e-4 || Math.Abs(FloatAt(img, dw(h.ViewOut, 16)) - 1.05f) > 1e-4) return null;
-        if (FloatAt(img, dw(h.ViewIn, 29)) != 1f || FloatAt(img, dw(h.ViewOut, 29)) != 1f) return null;
+        if (Math.Abs(FloatAt(img, dw(h.ViewIn, h.MOff)) - 0.96f) > 1e-4 || Math.Abs(FloatAt(img, dw(h.ViewOut, h.MOff)) - 1.05f) > 1e-4) return null;
+        if (FloatAt(img, dw(h.ViewIn, h.COff)) != 1f || FloatAt(img, dw(h.ViewOut, h.COff)) != 1f) return null;
         // the view's function table has zoomIn / zoomOut next to each other
         bool table = false;
         for (int o = TextEnd(img); o + 8 <= img.Length && !table; o += 4)
             table = BitConverter.ToUInt32(img, o) == h.ViewIn && BitConverter.ToUInt32(img, o + 4) == h.ViewOut;
         return table ? h : null;
+    }
+
+    // tw / kw effects that count drawn frames (all found by CNCStuff/cnc3_fps_patch, same signatures).
+    // 1/30 per frame steps: camera moves and lasers (same constant as the model step)
+    const string CameraStepPattern = "80 BB C8 00 00 00 00 75 6F D9 05 ?? ?? ?? ?? 51";
+    const string LaserStepPattern = "0F 2F F1 F3 0F 10 1D ?? ?? ?? ?? F3 0F 2A E0 0F 28 EC F3 0F 59 EB";
+    // absolute frame reads (getFrame = slot 78h here) where the art is made in 30fps frames
+    const string TracerResetPattern = "8B 01 FF 50 78 89 86 90 00 00 00 5E C3";
+    const string TracerUpdatePattern = "8B 01 57 FF 50 78 3B 86 90 00 00 00";
+    const string CloudPattern = "8B 01 FF 50 78 33 DB 32 C9 39 46 70";
+    const string Anim2DSetPattern = "66 89 46 04 8B 0D ?? ?? ?? ?? 8B 01 FF 50 78 89 46 08";
+    const string Anim2DUpdatePattern = "8B 0D ?? ?? ?? ?? 8B 01 FF 50 78 2B 46 08 3B 46 18";
+    // cpu particles step once per call
+    const string ParticlePatternCnc3 = "8B F1 E8 ?? ?? ?? ?? 83 66 40 00 6A 02 8D BE 8C 00 00 00 5B FF 77 04 8B CF";
+    // ability placement circles: throb period in ms * 0.03 frames/ms, compared with the drawn frame
+    const string ThrobPattern = "8B 0D ?? ?? ?? ?? 8B 01 57 FF 50 78 8B F8 8B 06 D9 40 14 51 D8 0D ?? ?? ?? ?? 51 DD 1C 24";
+    // camera shake: amplitude *= 0.75 every frame
+    const string ShakePattern = "A1 ?? ?? ?? ?? 80 B8 44 0F 00 00 00 74 09 80 B8 45 0F 00 00 00 74 22 F3 0F 59 05 ?? ?? ?? ?? F3 0F 11 43 78";
+
+    class Cnc3Fx { public uint CameraStep, LaserStep, Throb, Shake, PfxSite, PfxSim; public List<uint> Frame5 = new List<uint>(); public uint TracerUpdate; }
+
+    static Cnc3Fx FindCnc3Fx(byte[] img, uint modelStep)
+    {
+        Func<uint, int, uint> dw = (va, off) => BitConverter.ToUInt32(img, (int)(va - ImageBase) + off);
+        var fx = new Cnc3Fx();
+        uint cam = FindUnique(img, CameraStepPattern), laser = FindUnique(img, LaserStepPattern);
+        // only if they read the same 1/30 the model step reads
+        if (cam != 0 && laser != 0 && modelStep != 0 && dw(cam, 11) == dw(modelStep, 0) && dw(laser, 7) == dw(modelStep, 0))
+        { fx.CameraStep = cam + 11; fx.LaserStep = laser + 7; }
+        uint tr = FindUnique(img, TracerResetPattern), tu = FindUnique(img, TracerUpdatePattern), cl = FindUnique(img, CloudPattern);
+        uint aset = FindUnique(img, Anim2DSetPattern), aupd = FindUnique(img, Anim2DUpdatePattern);
+        if (tr != 0 && tu != 0) { fx.Frame5.Add(tr); fx.TracerUpdate = tu; }
+        if (cl != 0) fx.Frame5.Add(cl);
+        if (aset != 0 && aupd != 0) { fx.Frame5.Add(aset + 10); fx.Frame5.Add(aupd + 6); }   // both or neither (they get subtracted)
+        uint p = FindUnique(img, ParticlePatternCnc3);
+        if (p != 0) { fx.PfxSite = p + 2; fx.PfxSim = p + 7 + dw(p, 3); }
+        uint th = FindUnique(img, ThrobPattern);
+        // framesPerMs: a global set to 0.03 at startup, nothing to check in the file. just make sure it isn't code
+        if (th != 0 && dw(th, 22) >= ImageBase + (uint)TextEnd(img)) fx.Throb = th + 22;
+        uint sh = FindUnique(img, ShakePattern);
+        if (sh != 0 && FloatAt(img, dw(sh, 27)) == 0.75f) fx.Shake = sh + 27;
+        return fx;
+    }
+
+    // stepVa holds 1/fps already. stubVa: 30hz frame stub (slot 78h), dataVa: 2 floats
+    static void PatchCnc3Fx(IntPtr proc, Cnc3Fx fx, int fps, uint fpsVa, uint stepVa, uint stubVa, uint dataVa)
+    {
+        Func<uint, byte[]> u = BitConverter.GetBytes;
+        if (fx.CameraStep != 0 && On("camsteps")) Redirect(proc, new List<uint> { fx.CameraStep, fx.LaserStep }, stepVa);
+        if ((fx.Frame5.Count > 0 || fx.TracerUpdate != 0) && On("fxframes"))
+        {
+            var s = new List<byte> { 0x8B, 0x01, 0xFF, 0x50, 0x78, 0x6B, 0xC0, 0x1E };   // mov eax,[ecx] / call [eax+78h] / imul eax,30
+            s.AddRange(new byte[] { 0x8B, 0x15 }); s.AddRange(u(fpsVa));                // mov edx,[fps]
+            s.AddRange(new byte[] { 0x8D, 0x44, 0x10, 0xFF, 0x33, 0xD2, 0xF7, 0x35 }); s.AddRange(u(fpsVa));   // ceil(frame*30/fps)
+            s.Add(0xC3);
+            Write(proc, stubVa, s.ToArray());
+            // mov eax,[ecx] / call [eax+78h] (5 bytes) -> call stub
+            foreach (uint site in fx.Frame5)
+            {
+                var p = new List<byte> { 0xE8 }; p.AddRange(u(stubVa - (site + 5)));
+                Write(proc, site, p.ToArray());
+            }
+            // mov eax,[ecx] / push edi / call [eax+78h] (6 bytes) -> push edi / call stub
+            if (fx.TracerUpdate != 0)
+            {
+                var p = new List<byte> { 0x57, 0xE8 }; p.AddRange(u(stubVa - (fx.TracerUpdate + 6)));
+                Write(proc, fx.TracerUpdate, p.ToArray());
+            }
+        }
+        if (fx.Throb != 0 && On("throb"))
+        {
+            Write(proc, dataVa, BitConverter.GetBytes(fps / 1000f));   // frames per ms at this fps
+            Redirect(proc, new List<uint> { fx.Throb }, dataVa);
+        }
+        if (fx.Shake != 0 && On("shake"))
+        {
+            Write(proc, dataVa + 4, BitConverter.GetBytes((float)Math.Pow(0.75, 30.0 / fps)));   // same decay per second
+            Redirect(proc, new List<uint> { fx.Shake }, dataVa + 4);
+        }
     }
 
     static void PatchHeldCamera(IntPtr proc, byte[] img, HeldCamera h, int fps, uint dataVa, uint stubVa)
@@ -704,19 +799,34 @@ static class Program
         for (int i = 0; i < 2; i++)
         {
             // z = m*z +/- c per frame. same result per second at fps frames: m' = m^(30/fps), c' = c*(1-m')/(1-m)
-            byte[] code = img.Skip((int)(zooms[i].Fn - ImageBase)).Take(43).ToArray();
-            double m = FloatAt(img, BitConverter.ToUInt32(code, 16)), c = FloatAt(img, BitConverter.ToUInt32(code, 29));
+            byte[] code = img.Skip((int)(zooms[i].Fn - ImageBase)).Take(h.Len).ToArray();
+            double m = FloatAt(img, BitConverter.ToUInt32(code, h.MOff)), c = FloatAt(img, BitConverter.ToUInt32(code, h.COff));
             double m2 = Math.Pow(m, k), c2 = c * (1 - m2) / (1 - m);
             uint mVa = dataVa + (uint)(i * 8), cVa = mVa + 4, stub = stubVa + (uint)(i * 0x40);
             Write(proc, mVa, BitConverter.GetBytes((float)m2));
             Write(proc, cVa, BitConverter.GetBytes((float)c2));
-            BitConverter.GetBytes(mVa).CopyTo(code, 16);   // fmul [m']
-            BitConverter.GetBytes(cVa).CopyTo(code, 29);   // fsub/fadd [c']
+            BitConverter.GetBytes(mVa).CopyTo(code, h.MOff);   // fmul [m']
+            BitConverter.GetBytes(cVa).CopyTo(code, h.COff);   // fsub/fadd [c']
             Write(proc, stub, code);
             // behavior: mov ecx,[view] / (mov eax,[ecx] / mov edx,[eax+slot] / call edx) -> call stub
+            // tw/kw: (mov eax,[ecx] / call [eax+slot]), 8 bytes
             uint site = zooms[i].Beh + 13;
-            var p = new List<byte> { 0xE8 }; p.AddRange(BitConverter.GetBytes(stub - (site + 5))); p.AddRange(new byte[] { 0x90, 0x90, 0x90, 0x90, 0x90 });
+            var p = new List<byte> { 0xE8 }; p.AddRange(BitConverter.GetBytes(stub - (site + 5))); p.AddRange(Enumerable.Repeat((byte)0x90, h.Cnc3 ? 3 : 5));
             Write(proc, site, p.ToArray());
+        }
+        if (h.Cnc3)
+        {
+            // movss xmm0,[gd+off] / mov eax,[esp+10h] / mulss xmm0,[ecx+4] (17 bytes) -> call stub that also scales by 30/fps
+            uint site = h.Rotate + 12, rstub = stubVa + 0x80;
+            Write(proc, dataVa + 0x10, BitConverter.GetBytes((float)k));
+            var s = new List<byte>(img.Skip((int)(site - ImageBase)).Take(8));                     // movss xmm0,[eax+off]
+            s.AddRange(new byte[] { 0xF3, 0x0F, 0x59, 0x41, 0x04, 0xF3, 0x0F, 0x59, 0x05 });         // mulss xmm0,[ecx+4] / mulss xmm0,[k]
+            s.AddRange(BitConverter.GetBytes(dataVa + 0x10));
+            s.AddRange(new byte[] { 0x8B, 0x44, 0x24, 0x14, 0xC3 });                                // mov eax,[esp+14h] (the call pushed 4) / ret
+            Write(proc, rstub, s.ToArray());
+            var p = new List<byte> { 0xE8 }; p.AddRange(BitConverter.GetBytes(rstub - (site + 5))); p.AddRange(Enumerable.Repeat((byte)0x90, 12));
+            Write(proc, site, p.ToArray());
+            return;
         }
         uint rotOperand = h.Rotate + 0x14;
         float rot = FloatAt(img, BitConverter.ToUInt32(img, (int)(rotOperand - ImageBase)));
