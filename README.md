@@ -25,7 +25,9 @@ To change the fps run the setup again or edit `RA3HighFps.ini` (the zip has read
 
 **Coming from v1.6 or older?** You don't need the Steam launch option anymore, clear it (right-click the game > Properties > Launch Options). Leaving it is harmless, it only patches once.
 
-Tested on the **Steam** versions (RA3 1.13, Tiberium Wars 1.10, Kane's Wrath 1.3). If it doesn't work on your copy, open an issue with your `%TEMP%\RA3HighFps.log`, it has a report that helps me add support.
+**Linux (Steam Proton / Wine), untested:** install by hand (the zip, table above), then set the launch option so Proton uses the dll from the game folder: `WINEDLLOVERRIDES="d3d9=n,b" %command%` for RA3, `WINEDLLOVERRIDES="dinput8=n,b" %command%` for TW / KW. The fixes run on .NET Framework 4, which Proton doesn't have, so install it into the game's prefix once: `protontricks 17480 dotnet48` (RA3; TW is 24790, KW 24810). Running the setup exe or `RA3HighFps.exe` through wine next to the game doesn't work. If it still doesn't kick in, the log says why.
+
+Tested on the **Steam** versions (RA3 1.13, Tiberium Wars 1.10, Kane's Wrath 1.3). If it doesn't work on your copy (or the game crashes), open an issue with your `RA3HighFps.log`. It's next to the game's exe (same folder as the dlls), or in `%TEMP%` if the game folder is read-only. It says which fixes loaded and, if the game crashed, where, which helps me a lot.
 
 ## Picking a frame rate
 
@@ -45,7 +47,7 @@ Before v1.6 that wasn't true. RA3 ran about 33% fast at 120 and way faster at 24
 
 Stuff that isn't about frame rate. Off unless you turn it on in the setup (or the ini).
 
-- **Camera zoom-out (RA3):** lets you zoom out further (1.25x, 1.5x or 1.75x). Only in skirmish and campaign, online and LAN always use normal zoom so nobody gets an advantage. Past 1.75x the ground stops drawing at the top of the screen so that's the max for now
+- **Camera zoom-out (RA3):** lets you zoom out further (1.25x or 1.5x). Only in skirmish and campaign, online and LAN always use normal zoom so nobody gets an advantage. Further out, the game stops drawing the ground (and water) at the top of the screen on maps with big height differences, so 1.5x is the max.
 
 ## Is it safe?
 

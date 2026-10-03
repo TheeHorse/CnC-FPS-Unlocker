@@ -27,6 +27,7 @@ static class Program
             int fps = ReadIniFps(ini, 120);
             if (fps < 30 || fps > 240 || fps % 15 != 0) fps = 120;
             float zoom; if (!float.TryParse(ReadIni(ini, "zoom"), System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out zoom) || zoom < 1f || zoom > 3f) zoom = 1f;
+            zoom = Math.Min(zoom, 1.5f);   // further out the ground/water stops drawing at the top on hilly maps (#10)
             int hz = MonitorHz();
             if (hz >= 30 && fps > hz / 15 * 15) fps = Math.Max(30, hz / 15 * 15);
             img = File.ReadAllBytes(Process.GetCurrentProcess().MainModule.FileName);
@@ -37,17 +38,25 @@ static class Program
                 return 2;
             skip = (ReadIni(ini, "skip") ?? "").ToLowerInvariant();
             ApplyPatches(IntPtr.Zero, img, fps, zoom, true, null, false);
-            File.WriteAllText(Path.Combine(Path.GetTempPath(), "RA3HighFps.log"), DateTime.Now + "  drop-in DLL, fps=" + fps + ", zoom=" + zoom +
-                (skip != "" ? ", skip=" + skip : "") + ", exe=" + Path.GetFileName(Process.GetCurrentProcess().MainModule.FileName) + "\r\n" + found + "\r\n");
+            WriteLog(dir, DateTime.Now + "  drop-in DLL, fps=" + fps + ", zoom=" + zoom +
+                (skip != "" ? ", skip=" + skip : "") + ", exe=" + Path.GetFileName(Process.GetCurrentProcess().MainModule.FileName) + "\r\n" + found + "\r\n" + patched + "\r\n");
             return 1;
         }
         catch (Exception e)
         {
             string report = "";
             try { if (img != null) report = BuildReport(img); } catch (Exception re) { report = "report failed: " + re.Message; }
-            try { File.WriteAllText(Path.Combine(Path.GetTempPath(), "RA3HighFps.log"), DateTime.Now + "  drop-in DLL failed: " + e + "\r\n\r\n" + report); } catch { }
+            WriteLog(dir, DateTime.Now + "  drop-in DLL failed: " + e + "\r\n\r\n" + report);
             return 0;
         }
+    }
+
+    // %TEMP%\RA3HighFps.log, and a copy next to the game where people look first (may be read-only, then just temp).
+    // the drop-in dll appends crash lines to both
+    static void WriteLog(string dir, string text)
+    {
+        try { File.WriteAllText(Path.Combine(Path.GetTempPath(), "RA3HighFps.log"), text); } catch { }
+        try { File.WriteAllText(Path.Combine(dir, "RA3HighFps.log"), text); } catch { }
     }
 
     // for unknown builds: exe info, sections, and the bytes around every render/logic fps read
@@ -90,7 +99,7 @@ static class Program
     }
 
     // ini skip=fades,interp,... turns single fixes off (for tracking down problems with mods)
-    static string skip = "", found = "";
+    static string skip = "", found = "", patched = "";
     static bool On(string name) { return !skip.Split(',').Select(s => s.Trim()).Contains(name); }
 
     // proc isn't used, it's always our own process (kept so the patch functions read the same as before)
@@ -151,6 +160,15 @@ static class Program
         if (On("particles") && throttlePfx && pfxSite != 0)
             ThrottleParticles(proc, pfxSite, pfxSim, (uint)mem, (uint)mem + 8, (uint)mem + 0x40);
         FlushCode(proc);
+
+        // where everything went, so a crash address in the log can be matched to a fix
+        Func<IEnumerable<uint>, string> hex = l => string.Join(" ", l.Where(a => a != 0).Select(a => "0x" + a.ToString("X")));
+        patched = "patch memory 0x" + ((uint)mem).ToString("X") + "-0x" + ((uint)mem + 0xFFF).ToString("X") +
+            "\r\nsites: fps " + hex(sites) + " | fades " + hex(fades) + " | anim2d " + hex(anim2d) + " | construction " + hex(new[] { unpack }) +
+            " | limiter " + hex(new[] { limiter }) + " | scroll " + hex(new[] { scrollSlot }) + " | zoom " + hex(new[] { zoomSite }) +
+            " | interp " + hex(interpWindow) + " | models " + hex(new[] { modelStep }) + " | particles " + hex(new[] { pfxSite }) +
+            (schedSite != null ? " | sched " + hex(new[] { schedSite.Advance, schedSite.Exit }) : "") +
+            (held != null ? " | camerakeys " + hex(new[] { held.ZoomIn, held.ZoomOut, held.Rotate }) : "");
         return sites;
     }
 
@@ -411,8 +429,16 @@ static class Program
             int n = c + 2;
             bool set = img[n] == 0x89 && img[n + 1] == 0x46 && img[n + 2] == 0x08;                                  // mov [esi+8],eax
             bool upd = img[n] == 0x2B && img[n + 1] == 0x46 && img[n + 2] == 0x08 && img[n + 3] == 0x3B && img[n + 4] == 0x46 && img[n + 5] == 0x18;
-            if (set || upd) list.Add(ImageBase + (uint)i);
+            if (!set && !upd) continue;
+            // the stub calls getFrame on ecx itself, so it has to be mov ecx,[client] / mov r,[ecx] / mov r,[r+74h]
+            // (an unknown build with different code here gets no anim2d fix instead of a crash)
+            bool fromClient = img[i - 8] == 0x8B && img[i - 7] == 0x0D && img[i - 2] == 0x8B && (img[i - 1] & 0xC7) == 0x01
+                              && ((img[i - 1] >> 3) & 7) == (img[i + 1] & 7);
+            if (!fromClient) return new List<uint>();
+            list.Add(ImageBase + (uint)i);
         }
+        // and the same client object at every site
+        if (list.Select(va => BitConverter.ToUInt32(img, (int)(va - ImageBase) - 6)).Distinct().Count() > 1) return new List<uint>();
         return list;
     }
 
@@ -528,6 +554,8 @@ static class Program
                 if (j == pat.Length) list.Add(ImageBase + (uint)i);
             }
         }
+        // the stub reads the client from the first site, so all five have to use the same one
+        if (list.Select(va => BitConverter.ToUInt32(img, (int)(va - ImageBase) + 2)).Distinct().Count() > 1) return new List<uint>();
         return list.Count == 5 ? list : new List<uint>();
     }
 

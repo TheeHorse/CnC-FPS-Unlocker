@@ -387,16 +387,14 @@ begin
   ZoomBox.SetBounds(GamePage.SurfaceWidth - ScaleX(80), ZoomCheck.Top - ScaleY(3), ScaleX(80), ScaleY(23));
   ZoomBox.Items.Add('1.25x');
   ZoomBox.Items.Add('1.5x');
-  ZoomBox.Items.Add('1.75x');
   ZoomBox.ItemIndex := 1;
   for i := 0 to GetArrayLength(GameDirs) - 1 do
   begin
     z := ReadIni(IniPath(GameDirs[i]), 'zoom');
-    if (z = '1.25') or (z = '1.5') or (z = '1.75') then
+    if (z = '1.25') or (z = '1.5') or (z = '1.75') then   { 1.75 isn't offered any more (#10), it shows as 1.5 }
     begin
       ZoomCheck.Checked := True;
       if z = '1.25' then ZoomBox.ItemIndex := 0;
-      if z = '1.75' then ZoomBox.ItemIndex := 2;
       break;
     end;
   end;
@@ -454,7 +452,6 @@ begin
     case ZoomBox.ItemIndex of
       0: zoom := '1.25';
       1: zoom := '1.5';
-      2: zoom := '1.75';
     end;
   Done := '';
   OldLauncher := False;

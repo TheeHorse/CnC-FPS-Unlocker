@@ -101,7 +101,7 @@ Stuff that fades in or out (dying units, cloaking, some effects) gets its fade l
 
 ## Camera zoom-out extra (RA3)
 
-The view's `setZoom` (`0x616BE0` in 1.13) clamps zoom between two values from a small "camera limits" object (`[view+26FCh]`, min 350 and max 550 on stock maps). The call that gets the max (`0x616C8E`) goes through a wrapper that multiplies it by the `zoom` value from the ini, but only when there's no network object (`[0xCECF3C]` is null in skirmish and campaign, set online/LAN). Past about 1.75x you can see the edge of the terrain renderer's draw window at the top of the screen (ground stops in a straight line while objects still draw), so the setup goes up to 1.75x.
+The view's `setZoom` (`0x616BE0` in 1.13) clamps zoom between two values from a small "camera limits" object (`[view+26FCh]`, min 350 and max 550 on stock maps). The call that gets the max (`0x616C8E`) goes through a wrapper that multiplies it by the `zoom` value from the ini, but only when there's no network object (`[0xCECF3C]` is null in skirmish and campaign, set online/LAN). Past about 1.75x you can see the edge of the terrain renderer's draw window at the top of the screen (ground stops in a straight line while objects still draw), and on maps with big height differences it already happens at 1.75x (#10), so the setup goes up to 1.5x and the dll caps the ini value at 1.5.
 
 ## Leftovers
 
