@@ -25,7 +25,7 @@ To change the fps run the setup again or edit `RA3HighFps.ini` (the zip has read
 
 **Coming from v1.6 or older?** You don't need the Steam launch option anymore, clear it (right-click the game > Properties > Launch Options). Leaving it is harmless, it only patches once.
 
-**Linux (Steam Proton / Wine), untested:** install by hand (the zip, table above), then set the launch option so Proton uses the dll from the game folder: `WINEDLLOVERRIDES="d3d9=n,b" %command%` for RA3, `WINEDLLOVERRIDES="dinput8=n,b" %command%` for TW / KW. The fixes run on .NET Framework 4, which Proton doesn't have, so install it into the game's prefix once: `protontricks 17480 dotnet48` (RA3; TW is 24790, KW 24810). Running the setup exe or `RA3HighFps.exe` through wine next to the game doesn't work. If it still doesn't kick in, the log says why.
+**Linux (Steam Proton / Wine):** install by hand (the zip, table above), then set the launch option so Proton uses the dll from the game folder: `WINEDLLOVERRIDES="d3d9=n,b" %command%` for RA3, `WINEDLLOVERRIDES="dinput8=n,b" %command%` for TW / KW. The fixes are .NET code, the old v1.6 launcher ran fine on Proton's built-in .NET (thanks tomikaka22 for testing), so try it as is first. If the log says .NET couldn't start, install it into the game's prefix once: `protontricks 17480 dotnet48` (RA3; TW is 24790, KW 24810). The setup exe is Windows only.
 
 Tested on the **Steam** versions (RA3 1.13, Tiberium Wars 1.10, Kane's Wrath 1.3). If it doesn't work on your copy (or the game crashes), open an issue with your `RA3HighFps.log`. It's next to the game's exe (same folder as the dlls), or in `%TEMP%` if the game folder is read-only. It says which fixes loaded and, if the game crashed, where, which helps me a lot.
 
