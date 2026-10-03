@@ -35,6 +35,7 @@ OutputBaseFilename=CnC-FPS-Unlocker-Setup
 Source: "{#Files}\d3d9.dll"; Flags: dontcopy
 Source: "{#Files}\dinput8.dll"; Flags: dontcopy
 Source: "{#Files}\CnCFpsUnlocker.dll"; Flags: dontcopy
+Source: "{#Files}\RA3HighFps.exe"; Flags: dontcopy
 
 [Code]
 var
@@ -404,7 +405,7 @@ end;
 { ---- installing ---- }
 
 function InstallGame(game: String; fps: Integer; zoom: String; var err: String): Boolean;
-var exe, dir, proxy, ini: String; lines: TArrayOfString;
+var exe, dir, proxy, ini, old: String; lines: TArrayOfString; i: Integer;
 begin
   Result := False;
   exe := ExePath(game);
@@ -428,7 +429,22 @@ begin
   end;
   SetIni(ini, 'fps', IntToStr(fps));
   SetIni(ini, 'zoom', zoom);
-  if FileExists(dir + 'RA3HighFps.exe') then OldLauncher := True;
+  { v1.6 launcher (game folder, or next to the exe). still set as the steam launch option it patches
+    first and blocks the dll, so swap it for one that just starts the game }
+  for i := 0 to 1 do
+  begin
+    if i = 0 then old := AddBackslash(game) + 'RA3HighFps.exe' else old := dir + 'RA3HighFps.exe';
+    if FileExists(old) then
+    begin
+      ExtractTemporaryFile('RA3HighFps.exe');
+      if not FileCopy(ExpandConstant('{tmp}\RA3HighFps.exe'), old, False) then
+      begin
+        err := 'couldn''t replace the old launcher ' + old + ' (is the game running?)';
+        exit;
+      end;
+      OldLauncher := True;
+    end;
+  end;
   Result := True;
 end;
 
@@ -470,7 +486,7 @@ begin
           'Just start the games like you normally do. Run this setup again to change the fps.';
   if OldLauncher then
     Done := Done + #13#10#13#10 + 'Used an older version? You can clear the old Launch Options in Steam ' +
-            '(right-click the game > Properties). It still works if you leave it.';
+            '(right-click the game > Properties). It works either way.';
 end;
 
 procedure CurPageChanged(CurPageID: Integer);

@@ -23,7 +23,7 @@ Two ways, pick whichever you like. Either way there's no launch option to set, y
 
 To change the fps run the setup again or edit `RA3HighFps.ini` (the zip has ready-made ones for each fps in `FPS presets`). To uninstall delete `d3d9.dll` / `dinput8.dll`.
 
-**Coming from v1.6 or older?** You don't need the Steam launch option anymore, clear it (right-click the game > Properties > Launch Options). Leaving it is harmless, it only patches once.
+**Coming from v1.6 or older?** You don't need the Steam launch option anymore, clear it (right-click the game > Properties > Launch Options). The setup swaps the old `RA3HighFps.exe` for one that just starts the game, so leaving it is fine. If you install by hand, clear it or delete the old `RA3HighFps.exe`, otherwise the old version patches first and the new fixes don't run.
 
 **Linux (Steam Proton / Wine):** install by hand (the zip, table above), then set the launch option so Proton uses the dll from the game folder: `WINEDLLOVERRIDES="d3d9=n,b" %command%` for RA3, `WINEDLLOVERRIDES="dinput8=n,b" %command%` for TW / KW. The fixes are .NET code, the old v1.6 launcher ran fine on Proton's built-in .NET (thanks tomikaka22 for testing), so try it as is first. If the log says .NET couldn't start, install it into the game's prefix once: `protontricks 17480 dotnet48` (RA3; TW is 24790, KW 24810). The setup exe is Windows only.
 
