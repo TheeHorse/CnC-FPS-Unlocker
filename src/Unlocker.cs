@@ -20,6 +20,18 @@ static class Program
     // called from inside the game (dll/proxy.c)
     internal static int InProcess(string dir)
     {
+        return Patch(IntPtr.Zero, Process.GetCurrentProcess().MainModule.FileName, dir, "drop-in DLL");
+    }
+
+    // RA3HighFps.exe on linux (proton's .net runs exes but the dll can't host it): game started suspended,
+    // same patches from outside. dir = the game exe's folder, where the dll and ini are
+    internal static int Launch(IntPtr proc, string exe, string dir)
+    {
+        return Patch(proc, exe, dir, "RA3HighFps.exe");
+    }
+
+    static int Patch(IntPtr proc, string exe, string dir, string how)
+    {
         string ini = Path.Combine(dir, "RA3HighFps.ini");
         byte[] img = null;
         try
@@ -30,23 +42,23 @@ static class Program
             zoom = Math.Min(zoom, 1.5f);   // further out the ground/water stops drawing at the top on hilly maps (#10)
             int hz = MonitorHz();
             if (hz >= 30 && fps > hz / 15 * 15) fps = Math.Max(30, hz / 15 * 15);
-            img = File.ReadAllBytes(Process.GetCurrentProcess().MainModule.FileName);
-            // already patched (old v1.6 launcher still set as the steam launch option)
+            img = File.ReadAllBytes(exe);
+            // already patched (old v1.6 launcher still set as the steam launch option, or RA3HighFps.exe got there first)
             uint render = FindRenderFps(img);
             List<uint> pacing = FindPacingSites(img, render, render - 4);
-            if (pacing.Count > 0 && BitConverter.ToUInt32(Read(IntPtr.Zero, pacing[0], 4), 0) != BitConverter.ToUInt32(img, (int)(pacing[0] - ImageBase)))
+            if (pacing.Count > 0 && BitConverter.ToUInt32(Read(proc, pacing[0], 4), 0) != BitConverter.ToUInt32(img, (int)(pacing[0] - ImageBase)))
                 return 2;
             skip = (ReadIni(ini, "skip") ?? "").ToLowerInvariant();
-            ApplyPatches(IntPtr.Zero, img, fps, zoom, true, null, false);
-            WriteLog(dir, DateTime.Now + "  drop-in DLL, fps=" + fps + ", zoom=" + zoom +
-                (skip != "" ? ", skip=" + skip : "") + ", exe=" + Path.GetFileName(Process.GetCurrentProcess().MainModule.FileName) + "\r\n" + found + "\r\n" + patched + "\r\n");
+            ApplyPatches(proc, img, fps, zoom, true, null, false);
+            WriteLog(dir, DateTime.Now + "  " + how + ", fps=" + fps + ", zoom=" + zoom +
+                (skip != "" ? ", skip=" + skip : "") + ", exe=" + Path.GetFileName(exe) + "\r\n" + found + "\r\n" + patched + "\r\n");
             return 1;
         }
         catch (Exception e)
         {
             string report = "";
-            try { if (img != null) report = BuildReport(img); } catch (Exception re) { report = "report failed: " + re.Message; }
-            WriteLog(dir, DateTime.Now + "  drop-in DLL failed: " + e + "\r\n\r\n" + report);
+            try { if (img != null) report = BuildReport(img, exe); } catch (Exception re) { report = "report failed: " + re.Message; }
+            WriteLog(dir, DateTime.Now + "  " + how + " failed: " + e + "\r\n\r\n" + report);
             return 0;
         }
     }
@@ -60,10 +72,9 @@ static class Program
     }
 
     // for unknown builds: exe info, sections, and the bytes around every render/logic fps read
-    static string BuildReport(byte[] img)
+    static string BuildReport(byte[] img, string exe)
     {
         var sb = new StringBuilder();
-        string exe = Process.GetCurrentProcess().MainModule.FileName;
         int pe = BitConverter.ToInt32(img, 0x3C), n = BitConverter.ToUInt16(img, pe + 6), opt = pe + 24;
         int secs = opt + BitConverter.ToUInt16(img, pe + 20);
         sb.AppendFormat("exe {0}\r\nsize {1}  timestamp 0x{2:X8}  entry 0x{3:X}\r\n", exe, img.Length,
@@ -123,6 +134,8 @@ static class Program
         bool sched = schedSite != null && On("sched");   // skip=sched falls back to the plain fps redirect
         HeldCamera held = FindHeldCamera(img);
         Cnc3Fx fx = FindCnc3Fx(img, modelStep);
+        uint trailLock = FindTrailLock(img);
+        SwaySite sway = FindSway(img);
         if (pfxSite == 0 && fx.PfxSite != 0) { pfxSite = fx.PfxSite; pfxSim = fx.PfxSim; }   // tw / kw
         // for the log: which fixes this exe has, so reports from unknown builds say what's missing
         var have = new[] {
@@ -131,7 +144,7 @@ static class Program
             new { n = "anim2d", ok = anim2d.Count > 0 }, new { n = "models", ok = modelStep != 0 }, new { n = "particles", ok = pfxSite != 0 },
             new { n = "fades", ok = fades.Count > 0 }, new { n = "zoom", ok = zoomSite != 0 },
             new { n = "camsteps", ok = fx.CameraStep != 0 }, new { n = "fxframes", ok = fx.Frame5.Count > 0 }, new { n = "throb", ok = fx.Throb != 0 },
-            new { n = "shake", ok = fx.Shake != 0 } };
+            new { n = "shake", ok = fx.Shake != 0 }, new { n = "traillock", ok = trailLock != 0 }, new { n = "sway", ok = sway != null } };
         found = "found: " + string.Join(" ", have.Where(h => h.ok).Select(h => h.n)) + " | missing: " + string.Join(" ", have.Where(h => !h.ok).Select(h => h.n));
 
         // +0 fps, +8 particle accum, +40 stubs
@@ -158,6 +171,8 @@ static class Program
         if (On("anim2d") && anim2d.Count > 0) PatchAnim2D(proc, img, anim2d, (uint)mem, (uint)mem + 0x100);
         Write(proc, (uint)mem + 0x10, BitConverter.GetBytes(1f / fps));   // 1/fps: model, camera and laser steps
         PatchCnc3Fx(proc, fx, fps, (uint)mem, (uint)mem + 0x10, (uint)mem + 0xD00, (uint)mem + 0xD40);
+        if (On("traillock") && trailLock != 0) PatchTrailLock(proc, trailLock, (uint)mem + 0xE00);
+        if (On("sway") && sway != null && fps > 30) PatchSway(proc, img, sway, (uint)mem, (uint)mem + 0xE40);
         if (On("models") && modelStep != 0) Redirect(proc, new List<uint> { modelStep }, (uint)mem + 0x10);   // 1/fps instead of 1/30
         if (On("particles") && throttlePfx && pfxSite != 0)
             ThrottleParticles(proc, pfxSite, pfxSim, (uint)mem, (uint)mem + 8, (uint)mem + 0x40);
@@ -171,6 +186,8 @@ static class Program
             " | interp " + hex(interpWindow) + " | models " + hex(new[] { modelStep }) + " | particles " + hex(new[] { pfxSite }) +
             (schedSite != null ? " | sched " + hex(new[] { schedSite.Advance, schedSite.Exit }) : "") +
             (held != null ? " | camerakeys " + hex(new[] { held.ZoomIn, held.ZoomOut, held.Rotate }) : "") +
+            (trailLock != 0 ? " | traillock " + hex(new[] { trailLock }) : "") +
+            (sway != null ? " | sway " + hex(new[] { sway.Guard }) : "") +
             " | fx " + hex(fx.Frame5.Concat(new[] { fx.TracerUpdate, fx.CameraStep, fx.LaserStep, fx.Throb, fx.Shake }));
         return sites;
     }
@@ -1019,7 +1036,10 @@ static class Program
         b.E(0x50, 0xDB, 0x04, 0x24, 0xD8, 0x35); b.D(k200); b.E(0xD9, 0x5E, site.Interp, 0x58);   // [interp] = eax / 200
         b.E(0x5A, 0x58, 0x8B, 0x0D); b.D(exitGlobal); b.E(0xC3);        Write(proc, stubB, b.Done(0x100));
 
-        foreach (var s in new[] { Tuple.Create(site.Advance, stubA), Tuple.Create(site.Exit, stubB) })
+        // skip=schedinterp: keep the game's own interp (phase / 6). for tracking down turret wobble (#11)
+        var hooks = new List<Tuple<uint, uint>> { Tuple.Create(site.Advance, stubA) };
+        if (On("schedinterp")) hooks.Add(Tuple.Create(site.Exit, stubB));
+        foreach (var s in hooks)
         {
             var p = new List<byte> { 0xE8 }; p.AddRange(u(s.Item2 - (s.Item1 + 5))); p.Add(0x90);
             uint old;
@@ -1118,6 +1138,142 @@ static class Program
         }
     }
 
+    // uprising: a rope/trail renderer (1.1 0x8B7060) locks a vertex buffer and writes into it without checking.
+    // at high fps the lock can come back null -> crash writing 0 (#18, desolator killing infantry).
+    // if the lock fails, draw nothing this frame and leave the way the "no points" path does
+    const string TrailLockPattern = "8B 8E A0 00 00 00 8B 01 8B 50 0C 6A 00 53 FF D2 33 ED 85 FF 8B D8 89 6C 24 54 0F 8E";
+
+    static uint FindTrailLock(byte[] img)
+    {
+        uint m = FindUnique(img, TrailLockPattern);
+        if (m == 0) return 0;
+        int o = (int)(m - ImageBase);
+        // sub esp,1E4h / push ebx / push esi / mov esi,ecx at the start, and the draw count store at [esi+94h]
+        bool prologue = img[o - 0xA6] == 0x81 && img[o - 0xA5] == 0xEC && BitConverter.ToUInt32(img, o - 0xA4) == 0x1E4
+                        && img[o - 0xA0] == 0x53 && img[o - 0x9F] == 0x56 && img[o - 0x9E] == 0x8B && img[o - 0x9D] == 0xF1;
+        bool count = img[o - 0x30] == 0x89 && img[o - 0x2F] == 0x96 && BitConverter.ToUInt32(img, o - 0x2E) == 0x94;
+        return prologue && count ? m + 0x10 : 0;
+    }
+
+    static void PatchTrailLock(IntPtr proc, uint site, uint stubVa)
+    {
+        var s = new Asm(stubVa);
+        s.E(0x85, 0xC0); s.J(0x74, "fail");                          // test eax,eax / jz fail
+        s.E(0x8B, 0xD8, 0x33, 0xED, 0x85, 0xFF, 0xC3);                // original: mov ebx,eax / xor ebp,ebp / test edi,edi / ret
+        s.L("fail");
+        s.E(0x83, 0xC4, 0x04);                                        // drop our return address
+        s.E(0xC7, 0x86, 0x94, 0, 0, 0, 0, 0, 0, 0);                   // mov dword [esi+94h],0 (nothing to draw)
+        s.E(0x5D, 0x5F, 0x5E, 0x5B, 0x81, 0xC4, 0xE4, 0x01, 0, 0, 0xC3);   // pop ebp,edi,esi,ebx / add esp,1E4h / ret
+        Write(proc, stubVa, s.Done(0x40));
+        var p = new List<byte> { 0xE8 }; p.AddRange(BitConverter.GetBytes(stubVa - (site + 5))); p.Add(0x90);
+        Write(proc, site, p.ToArray());
+    }
+
+    // ra3/uprising: vehicle and boat sway (#12). calcPhysicsXform steps a spring (pitch/roll, boat wobble) once per
+    // drawn frame, guarded by "locomotor+C4h != getFrame()", so at 240 it swings 8x fast. the guard gets a 30hz frame,
+    // and the result is kept at the end of the drawable's loco info (grown 70h -> 80h) so the frames in between still
+    // get the tilt instead of none
+    const string SwayPattern = "8B 0D ?? ?? ?? ?? 8B 01 8B 50 74 55 FF D2 8B E8 39 AE ?? ?? ?? ?? 0F 84 ?? ?? ?? ?? 8B 8F ?? ?? ?? ?? E8 ?? ?? ?? ?? 89 A8 ?? ?? ?? ?? 8B 46 04 8B 48 04 8B 41 ?? 83 C0 FF 83 F8 07 77 ?? FF 24 85";
+
+    class SwaySite { public uint Guard, Skip, Alloc, LocoOff; public List<uint> Calls = new List<uint>(), AllocSites = new List<uint>(); }
+
+    static SwaySite FindSway(byte[] img)
+    {
+        uint m = FindUnique(img, SwayPattern);
+        if (m == 0) return null;
+        int o = (int)(m - ImageBase), end = TextEnd(img);
+        // push ebx / push edi / mov edi,ecx at the start: then [esp+14h] is the info pointer at the je
+        if (!(img[o - 0x31] == 0x53 && img[o - 0x30] == 0x57 && img[o - 0x2F] == 0x8B && img[o - 0x2E] == 0xF9)) return null;
+        var s = new SwaySite { Guard = m + 8, Skip = (uint)(m + 28 + BitConverter.ToInt32(img, o + 24)) };
+        // the skip label returns bl: pop ebp / pop esi / pop edi / mov al,bl / pop ebx / ret 4
+        int k = (int)(s.Skip - ImageBase);
+        if (!(img[k] == 0x5D && img[k + 1] == 0x5E && img[k + 2] == 0x5F && img[k + 3] == 0x8A && img[k + 4] == 0xC3)) return null;
+        // the case blocks: mov ecx,edi / call sway function
+        for (int i = o + 0x45; i < o + 0xB0; i++)
+            if (img[i] == 0x8B && img[i + 1] == 0xCF && img[i + 2] == 0xE8) s.Calls.Add(ImageBase + (uint)i + 2);
+        if (s.Calls.Count < 3) return null;
+        // every sway function starts: cmp [esi+loco],0 / jne / push 70h / call alloc / add esp,4 / ... / call ctor
+        uint ctor = 0;
+        foreach (uint c in s.Calls)
+        {
+            uint f = CallTarget(img, c);
+            int fo = (int)(f - ImageBase), a = -1;
+            int p = -1;   // the push 70h (sometimes a push reg sits between the cmp and the jne)
+            for (int i = fo; i < fo + 0x20 && p < 0; i++)
+            {
+                if (img[i] != 0x83 || img[i + 1] != 0xBE || img[i + 6] != 0) continue;
+                int j = i + 7 + (img[i + 7] >= 0x50 && img[i + 7] <= 0x57 ? 1 : 0);
+                if (img[j] == 0x75 && img[j + 2] == 0x6A && img[j + 3] == 0x70 && img[j + 4] == 0xE8) { a = i; p = j + 2; }
+            }
+            if (a < 0) return null;
+            uint loco = BitConverter.ToUInt32(img, a + 2), alloc = CallTarget(img, ImageBase + (uint)p + 2), ct = 0;
+            for (int i = p + 7; i < p + 23; i++) if (img[i] == 0x8B && img[i + 1] == 0xC8 && img[i + 2] == 0xE8) { ct = CallTarget(img, ImageBase + (uint)i + 2); break; }
+            if (ct == 0 || (s.LocoOff != 0 && (loco != s.LocoOff || alloc != s.Alloc || ct != ctor))) return null;
+            s.LocoOff = loco; s.Alloc = alloc; ctor = ct;
+        }
+        // every place that makes a loco info (sway functions + savegame load) has to get the bigger size
+        int ctorCalls = 0;
+        for (int i = 0x1000; i < end - 5; i++)
+        {
+            if (img[i] != 0xE8 || CallTarget(img, ImageBase + (uint)i) != ctor) continue;
+            ctorCalls++;
+            for (int j = i - 4; j > i - 24; j--)
+                if (img[j] == 0x6A && img[j + 1] == 0x70 && img[j + 2] == 0xE8 && CallTarget(img, ImageBase + (uint)j + 2) == s.Alloc) { s.AllocSites.Add(ImageBase + (uint)j + 2); break; }
+        }
+        return ctorCalls == s.AllocSites.Count && ctorCalls >= 3 ? s : null;
+    }
+
+    static void PatchSway(IntPtr proc, byte[] img, SwaySite s, uint fpsVa, uint mem)
+    {
+        Func<uint, byte[]> u = BitConverter.GetBytes;
+        uint frameStub = mem, cacheStub = mem + 0x20, allocStub = mem + 0x58, thunks = mem + 0xA0;   // up to +160h
+        // eax = ceil(getFrame() * 30 / fps), ecx = client
+        var f = new Asm(frameStub);
+        f.E(0x8B, 0x01, 0xFF, 0x50, 0x74, 0x6B, 0xC0, 0x1E, 0x8B, 0x15); f.D(fpsVa);
+        f.E(0x8D, 0x44, 0x10, 0xFF, 0x33, 0xD2, 0xF7, 0x35); f.D(fpsVa); f.E(0xC3);
+        Write(proc, frameStub, f.Done(0x20));
+        // already stepped this 30hz frame: hand back the kept result
+        var c = new Asm(cacheStub);
+        c.E(0x8B, 0x87); c.D(s.LocoOff); c.E(0x85, 0xC0); c.J(0x74, "none");     // mov eax,[edi+loco] / test / jz
+        c.E(0x8B, 0x4C, 0x24, 0x14);                                             // mov ecx,[esp+14h] (info)
+        for (byte k = 0; k < 16; k += 4) c.E(0x8B, 0x50, (byte)(0x70 + k), 0x89, 0x51, k);   // mov edx,[eax+70h+k] / mov [ecx+k],edx
+        c.E(0xB3, 0x01);                                                         // mov bl,1
+        c.L("none"); c.Rel(0xE9, s.Skip);
+        Write(proc, cacheStub, c.Done(0x38));
+        // alloc(70h) -> alloc(80h), our 16 bytes start zeroed (caller still does add esp,4)
+        var a = new Asm(allocStub);
+        a.E(0x68); a.D(0x80); a.Rel(0xE8, s.Alloc); a.E(0x83, 0xC4, 0x04);     // push 80h / call alloc / add esp,4
+        a.E(0x85, 0xC0); a.J(0x74, "null");
+        for (byte k = 0; k < 16; k += 4) a.E(0xC7, 0x40, (byte)(0x70 + k), 0, 0, 0, 0);   // mov dword [eax+70h+k],0
+        a.L("null"); a.E(0xC3);
+        Write(proc, allocStub, a.Done(0x40));
+        // sway function, then keep its result: push ebx / mov ebx,ecx / push info / push loco / call / copy / pop ebx / ret 8
+        var done = new Dictionary<uint, uint>();
+        foreach (uint site in s.Calls)
+        {
+            uint target = CallTarget(img, site), t;
+            if (!done.TryGetValue(target, out t))
+            {
+                t = thunks + (uint)done.Count * 0x40;
+                var th = new Asm(t);
+                th.E(0x53, 0x8B, 0xD9, 0xFF, 0x74, 0x24, 0x0C, 0xFF, 0x74, 0x24, 0x0C);
+                th.Rel(0xE8, target);
+                th.E(0x8B, 0x44, 0x24, 0x0C, 0x8B, 0x8B); th.D(s.LocoOff); th.E(0x85, 0xC9); th.J(0x74, "out");
+                for (byte k = 0; k < 16; k += 4) th.E(0x8B, 0x50, k, 0x89, 0x51, (byte)(0x70 + k));   // mov edx,[eax+k] / mov [ecx+70h+k],edx
+                th.L("out"); th.E(0x5B, 0xC2, 0x08, 0x00);
+                Write(proc, t, th.Done(0x40));
+                done[target] = t;
+            }
+            Write(proc, site + 1, u(t - (site + 5)));
+        }
+        foreach (uint site in s.AllocSites) Write(proc, site + 1, u(allocStub - (site + 5)));
+        // mov edx,[eax+74h] / push ebp / call edx -> push ebp / call frame stub
+        var g = new List<byte> { 0x55, 0xE8 }; g.AddRange(u(frameStub - (s.Guard + 6)));
+        Write(proc, s.Guard, g.ToArray());
+        // je skip -> je cache stub
+        Write(proc, s.Guard + 16, u(cacheStub - (s.Guard + 20)));
+    }
+
     // raw offset == rva in these exes
     static int TextEnd(byte[] img)
     {
@@ -1191,24 +1347,50 @@ static class Program
     const uint MEM_COMMIT = 0x1000, MEM_RESERVE = 0x2000, PAGE_EXECUTE_READWRITE = 0x40;
 
     // memory helpers. the patch code only goes through these, so it's the same in both builds
-    // dll: we're inside the game, so plain in-process memory access
-    static IntPtr Alloc(IntPtr proc, int size) { return VirtualAlloc(IntPtr.Zero, (UIntPtr)size, MEM_COMMIT | MEM_RESERVE, PAGE_EXECUTE_READWRITE); }
-    static bool Protect(IntPtr proc, IntPtr addr, UIntPtr size, uint prot, out uint old) { return VirtualProtect(addr, size, prot, out old); }
-    static void FlushCode(IntPtr proc) { FlushInstructionCache(GetCurrentProcess(), IntPtr.Zero, UIntPtr.Zero); }
-    static byte[] Read(IntPtr proc, uint va, int n) { var b = new byte[n]; Marshal.Copy((IntPtr)va, b, 0, n); return b; }
+    // proc 0 = dll inside the game, plain in-process memory access.
+    // otherwise RA3HighFps.exe on linux patching the suspended game from outside (see Launch)
+    static IntPtr Alloc(IntPtr proc, int size)
+    {
+        return proc == IntPtr.Zero ? VirtualAlloc(IntPtr.Zero, (UIntPtr)size, MEM_COMMIT | MEM_RESERVE, PAGE_EXECUTE_READWRITE)
+                                   : VirtualAllocEx(proc, IntPtr.Zero, (UIntPtr)size, MEM_COMMIT | MEM_RESERVE, PAGE_EXECUTE_READWRITE);
+    }
+    static bool Protect(IntPtr proc, IntPtr addr, UIntPtr size, uint prot, out uint old)
+    {
+        return proc == IntPtr.Zero ? VirtualProtect(addr, size, prot, out old) : VirtualProtectEx(proc, addr, size, prot, out old);
+    }
+    static void FlushCode(IntPtr proc) { FlushInstructionCache(proc == IntPtr.Zero ? GetCurrentProcess() : proc, IntPtr.Zero, UIntPtr.Zero); }
+    static byte[] Read(IntPtr proc, uint va, int n)
+    {
+        var b = new byte[n];
+        UIntPtr done;
+        if (proc == IntPtr.Zero) Marshal.Copy((IntPtr)va, b, 0, n);
+        else if (!ReadProcessMemory(proc, (IntPtr)va, b, (UIntPtr)n, out done)) throw new Exception(string.Format("couldn't read game memory at 0x{0:X}", va));
+        return b;
+    }
     static void Write(IntPtr proc, uint va, byte[] data)
     {
         uint old;
-        if (!VirtualProtect((IntPtr)va, (UIntPtr)data.Length, PAGE_EXECUTE_READWRITE, out old))
+        UIntPtr done;
+        if (!Protect(proc, (IntPtr)va, (UIntPtr)data.Length, PAGE_EXECUTE_READWRITE, out old))
             throw new Exception(string.Format("couldn't write game memory at 0x{0:X}", va));
-        Marshal.Copy(data, 0, (IntPtr)va, data.Length);
-        VirtualProtect((IntPtr)va, (UIntPtr)data.Length, old, out old);
+        if (proc == IntPtr.Zero) Marshal.Copy(data, 0, (IntPtr)va, data.Length);
+        else if (!WriteProcessMemory(proc, (IntPtr)va, data, (UIntPtr)data.Length, out done))
+            throw new Exception(string.Format("couldn't write game memory at 0x{0:X}", va));
+        Protect(proc, (IntPtr)va, (UIntPtr)data.Length, old, out old);
     }
 
     [DllImport("kernel32.dll", SetLastError = true)]
     static extern IntPtr VirtualAlloc(IntPtr addr, UIntPtr size, uint type, uint protect);
     [DllImport("kernel32.dll", SetLastError = true)]
     static extern bool VirtualProtect(IntPtr addr, UIntPtr size, uint protect, out uint old);
+    [DllImport("kernel32.dll", SetLastError = true)]
+    static extern IntPtr VirtualAllocEx(IntPtr h, IntPtr addr, UIntPtr size, uint type, uint protect);
+    [DllImport("kernel32.dll", SetLastError = true)]
+    static extern bool VirtualProtectEx(IntPtr h, IntPtr addr, UIntPtr size, uint protect, out uint old);
+    [DllImport("kernel32.dll", SetLastError = true)]
+    static extern bool WriteProcessMemory(IntPtr h, IntPtr addr, byte[] buf, UIntPtr size, out UIntPtr written);
+    [DllImport("kernel32.dll", SetLastError = true)]
+    static extern bool ReadProcessMemory(IntPtr h, IntPtr addr, byte[] buf, UIntPtr size, out UIntPtr read);
     [DllImport("kernel32.dll")] static extern bool FlushInstructionCache(IntPtr h, IntPtr addr, UIntPtr size);
     [DllImport("kernel32.dll")] static extern IntPtr GetCurrentProcess();
 }
@@ -1217,4 +1399,6 @@ static class Program
 public static class DllEntry
 {
     public static int Run(string dir) { return Program.InProcess(dir); }
+    // RA3HighFps.exe calls this by reflection (linux)
+    public static int Launch(IntPtr proc, string exe, string dir) { return Program.Launch(proc, exe, dir); }
 }

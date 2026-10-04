@@ -119,6 +119,18 @@ Stuff that fades in or out (dying units, cloaking, some effects) gets its fade l
 
 The view's `setZoom` (`0x616BE0` in 1.13) clamps zoom between two values from a small "camera limits" object (`[view+26FCh]`, min 350 and max 550 on stock maps). The call that gets the max (`0x616C8E`) goes through a wrapper that multiplies it by the `zoom` value from the ini, but only when there's no network object (`[0xCECF3C]` is null in skirmish and campaign, set online/LAN). Past about 1.75x you can see the edge of the terrain renderer's draw window at the top of the screen (ground stops in a straight line while objects still draw), and on maps with big height differences it already happens at 1.75x (#10), so the setup goes up to 1.5x and the dll caps the ini value at 1.5.
 
+## Uprising rope/trail crash
+
+Uprising has a renderer RA3 doesn't (`0x8B7060` in 1.1, `0x8CF210` in 1.0) that turns a chain of simulated points into a tube: (points - 1) * sides * 4 vertices. It locks a vertex buffer for that (vtable `+0Ch` on `[esi+0A0h]`) and starts writing without checking what came back. When the lock fails it gets 0 and the first write (`mov [eax+ebx],ebp` at `0x8B7B7F`) crashes writing address 0. That's the Desolator crash (#18). Now a failed lock sets the draw count `[esi+94h]` to 0 and leaves the function the same way it does when there are no points, so that effect just doesn't draw for that frame.
+
+## Vehicle and boat sway (RA3, Uprising)
+
+Tanks, cars and boats tilt with a little spring (pitch/roll, plus a slow wobble on boats), same idea as Generals' `Drawable::calcPhysicsXform`. It steps once per drawn frame, so at 240 everything shook 8x fast (#12). RA3 already only steps it once per frame (`locomotor+C4h != getFrame()`, `0x561061` in Uprising 1.1, `0x55C561` in RA3 1.13), so that check now gets the 30hz frame number. On the frames in between the game would normally return "no tilt", so the result of each real step is kept in 16 extra bytes at the end of the drawable's loco info (allocated 80h instead of 70h, including when a save loads) and handed back.
+
+## Linux
+
+Proton and Wine run .NET exes with their own Mono, but the dll hosting .NET from inside the game (`ExecuteInDefaultAppDomain`) fails there. So under Wine `RA3HighFps.exe` does what the stock launcher does (highest SkuDef for the language, `set-exe` from it, `-config <skudef>`), starts the game suspended, has `CnCFpsUnlocker.dll` patch it from outside (`VirtualAllocEx` / `WriteProcessMemory`, same patch code), then resumes it. If the drop-in dll also loads it sees the game is already patched and does nothing. On Windows the exe still just passes through.
+
 ## Leftovers
 
 - Particles simulate at 30hz like stock so smoke is a little less smooth than units. Try `--pfx off` if you want to mess with it

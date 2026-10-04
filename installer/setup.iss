@@ -480,9 +480,11 @@ begin
         Result := False;
         exit;
       end;
-      Done := Done + #13#10 + '  ' + GameList.ItemCaption[i];
+      if Done <> '' then Done := Done + ', ';
+      Done := Done + GameList.ItemCaption[i];
     end;
-  Done := 'Installed at ' + IntToStr(fps) + ' fps for:' + #13#10 + Done + #13#10#13#10 +
+  { one line, the finish page only has room for a few lines }
+  Done := 'Installed at ' + IntToStr(fps) + ' fps for ' + Done + '.' + #13#10#13#10 +
           'Just start the games like you normally do. Run this setup again to change the fps.';
   if OldLauncher then
     Done := Done + #13#10#13#10 + 'Used an older version? You can clear the old Launch Options in Steam ' +
@@ -492,5 +494,8 @@ end;
 procedure CurPageChanged(CurPageID: Integer);
 begin
   if CurPageID = wpFinished then
+  begin
     WizardForm.FinishedLabel.Caption := Done;
+    WizardForm.FinishedLabel.Height := WizardForm.FinishedPage.ClientHeight - WizardForm.FinishedLabel.Top;
+  end;
 end;

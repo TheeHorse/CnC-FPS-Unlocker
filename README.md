@@ -26,7 +26,16 @@ To change the fps run the setup again or edit `RA3HighFps.ini` (the zip has read
 
 **Coming from v1.6 or older?** You don't need the Steam launch option anymore, clear it (right-click the game > Properties > Launch Options). The setup swaps the old `RA3HighFps.exe` for one that just starts the game, so leaving it is fine. If you install by hand, clear it or delete the old `RA3HighFps.exe`, otherwise the old version patches first and the new fixes don't run.
 
-**Linux (Steam Proton / Wine):** install by hand (the zip, table above), then set the launch option so Proton uses the dll from the game folder: `WINEDLLOVERRIDES="d3d9=n,b" %command%` for RA3, `WINEDLLOVERRIDES="dinput8=n,b" %command%` for TW / KW. The fixes are .NET code, the old v1.6 launcher ran fine on Proton's built-in .NET (thanks tomikaka22 for testing), so try it as is first. If the log says .NET couldn't start, install it into the game's prefix once: `protontricks 17480 dotnet48` (RA3; TW is 24790, KW 24810). The setup exe is Windows only.
+**Linux (Steam Proton / Wine):** the dll can't start .NET under Proton, but Proton runs `RA3HighFps.exe` fine, so that does the patching there. Copy `CnCFpsUnlocker.dll` and `RA3HighFps.ini` where the table says, put `RA3HighFps.exe` in the main game folder (next to `RA3.exe` / `CNC3.exe` / `CNC3EP1.exe`), and set a launch option that swaps the game's launcher for it (thanks tomikaka22 for figuring this out):
+
+| Game | Launch option |
+|---|---|
+| Red Alert 3 | `eval "$(echo "%command%" \| sed 's/RA3\.exe/RA3HighFps.exe/i')"` |
+| Uprising | `eval "$(echo "%command%" \| sed 's/RA3EP1\.exe/RA3HighFps.exe/i')"` |
+| Tiberium Wars | `eval "$(echo "%command%" \| sed 's/CNC3\.exe/RA3HighFps.exe/i')"` |
+| Kane's Wrath | `eval "$(echo "%command%" \| sed 's/CNC3EP1\.exe/RA3HighFps.exe/i')"` |
+
+No dotnet48 or protontricks needed. The setup exe is Windows only.
 
 Tested on the **Steam** versions (RA3 1.13, Tiberium Wars 1.10, Kane's Wrath 1.3). If it doesn't work on your copy (or the game crashes), open an issue with your `RA3HighFps.log`. It's next to the game's exe (same folder as the dlls), or in `%TEMP%` if the game folder is read-only. It says which fixes loaded and, if the game crashed, where, which helps me a lot.
 
