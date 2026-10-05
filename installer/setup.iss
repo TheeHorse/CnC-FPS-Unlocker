@@ -167,10 +167,11 @@ begin
   end;
 end;
 
-{ bfme2: no SkuDefs, the launcher (lotrbfme2.exe) starts game.dat }
+{ bfme2: no SkuDefs, the launcher (lotrbfme2.exe, rotwk lotrbfme2ep1.exe) starts game.dat }
 function IsBfme2Folder(dir: String): Boolean;
 begin
-  Result := (dir <> '') and FileExists(AddBackslash(dir) + 'game.dat') and FileExists(AddBackslash(dir) + 'lotrbfme2.exe');
+  Result := (dir <> '') and FileExists(AddBackslash(dir) + 'game.dat')
+    and (FileExists(AddBackslash(dir) + 'lotrbfme2.exe') or FileExists(AddBackslash(dir) + 'lotrbfme2ep1.exe'));
 end;
 
 function ExePath(game: String): String;
@@ -229,6 +230,7 @@ function GameName(dir: String): String;
 var leaf: String;
 begin
   leaf := ExtractFileName(RemoveBackslashUnlessRoot(dir));
+  if IsBfme2Folder(dir) and FileExists(AddBackslash(dir) + 'lotrbfme2ep1.exe') then begin Result := 'BFME2: Rise of the Witch-king (new, not well tested yet)'; exit; end;
   if IsBfme2Folder(dir) then begin Result := 'Battle for Middle-earth II (new, not well tested yet)'; exit; end;
   case Lowercase(leaf) of
     'command and conquer red alert 3': Result := 'Red Alert 3';

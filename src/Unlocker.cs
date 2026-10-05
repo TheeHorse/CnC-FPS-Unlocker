@@ -1363,7 +1363,8 @@ static class Program
     // W3DView::scrollBy (SCROLL_RESOLUTION 250), same fix as c&c3: scale the step through its vtable slot
     const string BfmeScrollByPattern = "55 8B EC 83 EC 64 A1 ?? ?? ?? ?? 80 B8 C0 00 00 00 00 53 8B D9 74 06 80 7B 44 00 75 09 80 BB 01 25 00 00 00 74 07 33 C0 E9";
 
-    class BfmeSites { public uint Render, Logic, Limiter, TimeIat, FrameMs, FrameMsSetter, ScrollFunc, ScrollSlot; public List<uint> Fps = new List<uint>(); public SchedSite Sched; }
+    class BfmeSites { public uint Render, Logic, Limiter, TimeIat, FrameMs, FrameMsSetter, ScrollFunc, ScrollSlot; public List<uint> Fps = new List<uint>(); public SchedSite Sched;
+        public List<Tuple<uint, byte[]>> Restore = new List<Tuple<uint, byte[]>>(); }
 
     static BfmeSites FindBfme(byte[] img)
     {
@@ -1385,6 +1386,14 @@ static class Program
             // cvtsi2ss xmm,[fps] / cvtsi2ss xmm,[logic] (the same ratio as floats)
             else if (img[i - 4] == 0xF3 && img[i - 3] == 0x0F && img[i - 2] == 0x2A && img[i + 4] == 0xF3 && img[i + 5] == 0x0F && img[i + 6] == 0x2A && at(i + 8, L))
                 b.Fps.Add(ImageBase + (uint)i);
+            // rotwk 2.02 edits the two phase ratio sites (phase dispatcher: idiv [own 8], tick boundary: mov eax,2 / jmp).
+            // that fights the time scheduler (move hitching), so put the stock idiv [logic] back and redirect them like stock
+            else if (img[i - 1] == 0xA1 && img[i + 4] == 0x99 && img[i + 5] == 0xF7 && img[i + 6] == 0x3D && !at(i + 7, L)
+                     && img[i + 11] == 0x56 && img[i + 12] == 0x6A && img[i + 13] == 0x06)
+            { b.Fps.Add(ImageBase + (uint)i); b.Restore.Add(Tuple.Create(ImageBase + (uint)i + 7, L)); }
+            else if (img[i - 1] == 0xA1 && img[i + 4] == 0x99 && img[i + 5] == 0xB8 && img[i + 10] == 0xEB && img[i + 12] == 0xC8
+                     && img[i + 13] == 0x83 && img[i + 14] == 0xF9 && img[i + 15] == 0x06)
+            { b.Fps.Add(ImageBase + (uint)i); b.Restore.Add(Tuple.Create(ImageBase + (uint)i + 5, new byte[] { 0xF7, 0x3D, L[0], L[1], L[2], L[3], 0x8B })); }
         }
         if (b.Fps.Count < 4) return null;
         uint lim = FindUnique(img, BfmeLimiterPattern);
@@ -1426,6 +1435,7 @@ static class Program
         if (mem == IntPtr.Zero) throw new Exception("couldn't allocate patch memory");
         uint m = (uint)mem;
         Write(proc, m, BitConverter.GetBytes(fps));
+        foreach (var r in b.Restore) Write(proc, r.Item1, r.Item2);
         Redirect(proc, b.Fps, m);
         // limiter: fild [esi+0Ch] / mov edi,eax (5 bytes) -> call: fild [fps] / mov edi,eax / ret
         if (On("limiter"))
@@ -1458,10 +1468,11 @@ static class Program
         FlushCode(proc);
         Func<IEnumerable<uint>, string> hex = l => string.Join(" ", l.Where(a => a != 0).Select(a => "0x" + a.ToString("X")));
         patched = "patch memory 0x" + m.ToString("X") + "-0x" + (m + 0xFFF).ToString("X") + "\r\nsites: fps " + hex(b.Fps) + " | limiter " + hex(new[] { b.Limiter }) + " | animclock " + hex(new[] { b.FrameMsSetter }) + " | scroll " + hex(new[] { b.ScrollSlot }) +
-            (b.Sched != null ? " | sched " + hex(new[] { b.Sched.Advance, b.Sched.Exit }) + string.Format(" phase {0:X} interp {1:X} dispatch {2:X}", b.Sched.Phase, b.Sched.Interp, b.Sched.Dispatch) : "");
+            (b.Sched != null ? " | sched " + hex(new[] { b.Sched.Advance, b.Sched.Exit }) + string.Format(" phase {0:X} interp {1:X} dispatch {2:X}", b.Sched.Phase, b.Sched.Interp, b.Sched.Dispatch) : "") +
+            (b.Restore.Count > 0 ? " | restored stock code " + hex(b.Restore.Select(r => r.Item1)) : "");
     }
 
-    // raw offset == rva in these exes
+    // end of .text (img is mapped, see MapImage)
     static int TextEnd(byte[] img)
     {
         int pe = BitConverter.ToInt32(img, 0x3C);
