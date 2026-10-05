@@ -117,17 +117,24 @@ static class Forwarder
             throw new Exception("CnCFpsUnlocker.dll isn't in " + dir + ".\n\nCopy it there from the zip (see the install table in the README).");
 
         string cmd = Quote(exe) + " -config " + Quote(sku) + (pass.Count > 0 ? " " + string.Join(" ", pass.Select(Quote)) : "");
+        // the game inherits this. tells the drop-in dll (if it's there too) that we've patched already, so it doesn't
+        // try .net (fails under proton) and overwrite our log with that error
+        Environment.SetEnvironmentVariable("CNCFPS_LAUNCHER", "1");
         var si = new STARTUPINFO { cb = Marshal.SizeOf(typeof(STARTUPINFO)) };
         PROCESS_INFORMATION pi;
         if (!CreateProcess(null, new StringBuilder(cmd), IntPtr.Zero, IntPtr.Zero, false, CREATE_SUSPENDED, IntPtr.Zero, game, ref si, out pi))
             throw new Exception("Couldn't start " + exe + " (error " + Marshal.GetLastWin32Error() + ").");
+        string note;
         try
         {
-            // the dll writes RA3HighFps.log either way. if it fails the game still runs, just without the fixes
+            // the dll writes RA3HighFps.log. if it fails the game still runs, just without the fixes
             var entry = Assembly.LoadFrom(dll).GetType("DllEntry");
-            entry.GetMethod("Launch").Invoke(null, new object[] { pi.hProcess, exe, dir });
+            int r = (int)entry.GetMethod("Launch").Invoke(null, new object[] { pi.hProcess, exe, dir });
+            note = r == 1 ? "patched" : r == 2 ? "already patched" : "patching failed (see above)";
         }
-        catch { }
+        catch (Exception e) { note = "couldn't run CnCFpsUnlocker.dll: " + (e.InnerException ?? e); }
+        // what got started, so a log from a modded install says what happened
+        try { File.AppendAllText(Path.Combine(dir, "RA3HighFps.log"), "RA3HighFps.exe started: " + cmd + "\r\n" + note + "\r\n"); } catch { }
         ResumeThread(pi.hThread);
         CloseHandle(pi.hThread);
         // wait so Steam sees the game as running until it closes

@@ -143,6 +143,9 @@ static void run_patches(void)
     Com *meta = 0, *info = 0, *host = 0;
     DWORD ret = 0;
 
+    /* started by RA3HighFps.exe (linux): it patched the game from outside already, nothing to do here
+       (and .net fails under proton, which would overwrite its log with an error) */
+    if (GetEnvironmentVariableW(L"CNCFPS_LAUNCHER", assembly, MAX_PATH)) return;
     lstrcpyW(assembly, dll_dir);
     lstrcatW(assembly, L"\\CnCFpsUnlocker.dll");
     if (GetFileAttributesW(assembly) == INVALID_FILE_ATTRIBUTES) { load_failed("CnCFpsUnlocker.dll isn't next to the game", 0); return; }

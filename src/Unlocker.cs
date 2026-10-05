@@ -968,8 +968,11 @@ static class Program
     {
         Func<uint, byte[]> u = BitConverter.GetBytes;
         uint eng = mem + 0x3C, r = mem + 0x38, now3 = mem + 0x80, t0 = mem + 0x84, pend = mem + 0x88, k200 = mem + 0x8C;
-        uint stubA = mem + 0x800, stubB = mem + 0xA00, table = mem + 0xB0, tickFrame = mem + 0xC8, prevNow = mem + 0xCC;
-        foreach (var e in new[] { 0, 33, 67, 100, 133, 167 }.Select((v, i) => new { v, i })) Write(proc, table + (uint)(e.i * 4), BitConverter.GetBytes(e.v));
+        uint stubA = mem + 0x800, stubB = mem + 0xA00, table = mem + 0xB0, tickFrame = mem + 0xC8, prevNow = mem + 0xCC, prevA = mem + 0xD0;
+        // phase k is due once (time into the tick + this frame) reaches k/6, the moment stock has interp = k/6.
+        // interp then rises smoothly from k/6 toward (k+1)/6 until the next phase. at 90 that's stock exactly.
+        // (it used to run phase k at (k-1)/6, so interp sat ~1/6 behind the phase that just ran: turrets wobbled, #11)
+        foreach (var e in new[] { 30, 63, 97, 130, 163, 197 }.Select((v, i) => new { v, i })) Write(proc, table + (uint)(e.i * 4), BitConverter.GetBytes(e.v));
         uint exitGlobal = BitConverter.ToUInt32(img, (int)(site.Exit + 2 - ImageBase));
         byte ph = site.Phase;
         Write(proc, k200, BitConverter.GetBytes(200f));
@@ -991,9 +994,16 @@ static class Program
         a.E(0x81, 0x2D); a.D(t0); a.D(200);                          // network held it back, undo
         a.L("nopend");
         a.E(0x8B, 0xD0, 0x2B, 0x15); a.D(t0);                        // edx = t = now3 - tickStart
+        a.E(0x50, 0x2B, 0x05); a.D(prevA);                           // push eax / eax = frame length
+        a.E(0xFF, 0x35); a.D(now3); a.E(0x8F, 0x05); a.D(prevA);    // prevA = now3
+        a.E(0x85, 0xC0); a.J(0x7D, "lpos"); a.E(0x33, 0xC0);
+        a.L("lpos");
+        a.E(0x83, 0xF8, 0x64); a.J(0x7E, "lok"); a.E(0xB8); a.D(100);   // clamp 0..100
+        a.L("lok");
+        a.E(0x03, 0xD0, 0x58);                                       // edx = t + frame length / pop eax
         a.E(0x83, 0xF9, 0x06); a.J(0x72, "mid");
-        // phase 6 done, next tick after 66.67ms
-        a.E(0x81, 0xFA); a.D(200); a.J(0x7C, "idle");
+        // phase 6 done. phase 1 of the next tick is due at 200 + 33 (thresholds are 1ms early, now3 rounds down)
+        a.E(0x81, 0xFA); a.D(230); a.J(0x7C, "idle");
         a.E(0x81, 0x05); a.D(t0); a.D(200);                          // tickStart += 200
         a.E(0xA3); a.D(tickFrame);
         a.E(0xC7, 0x05); a.D(pend); a.D(1);
@@ -1019,22 +1029,29 @@ static class Program
         Write(proc, stubA, a.Done(0x200));
 
         // stub B: replaces mov ecx,[global] at the exit.
-        // interp = (now - tickFrame + frame length) / 200, max 1. goes 1/8 .. 8/8 at 120
+        // interp = (now - tickStart + frame length) / 200, max 1
         var b = new Asm(stubB);
-        b.E(0x50, 0x52);
+        b.E(0x50, 0x52, 0x51);
         b.E(0xA1); b.D(now3); b.E(0x8B, 0xD0, 0x2B, 0x15); b.D(prevNow);   // edx = frame length
         b.E(0xA3); b.D(prevNow);
         b.E(0x85, 0xD2); b.J(0x7D, "dpos"); b.E(0x33, 0xD2);
         b.L("dpos");
         b.E(0x83, 0xFA, 0x64); b.J(0x7E, "dok"); b.E(0xBA); b.D(100);         // clamp 0..100
         b.L("dok");
-        b.E(0x2B, 0x05); b.D(tickFrame); b.E(0x03, 0xC2);                    // eax = now - tickFrame + frame length
+        b.E(0x2B, 0x05); b.D(t0); b.E(0x03, 0xC2);                           // eax = now - tickStart + frame length
         b.E(0x85, 0xC0); b.J(0x7D, "b1"); b.E(0x33, 0xC0);
         b.L("b1");
         b.E(0x3D); b.D(200); b.J(0x7E, "b2"); b.E(0xB8); b.D(200);
         b.L("b2");
+        // keep it between phase/6 and (phase+1)/6, it never runs ahead of what logic did
+        b.E(0x8B, 0x56, ph, 0x8D, 0x4A, 0xFF, 0x83, 0xF9, 0x05); b.J(0x77, "b4");     // edx = phase / ecx = phase-1 / ja (not 1..6)
+        b.E(0x3B, 0x04, 0x8D); b.D(table); b.J(0x7D, "b3"); b.E(0x8B, 0x04, 0x8D); b.D(table);   // eax = max(eax, T[phase-1])
+        b.L("b3");
+        b.E(0x83, 0xFA, 0x06); b.J(0x7D, "b4");                                    // phase 6: max stays 200
+        b.E(0x3B, 0x04, 0x95); b.D(table); b.J(0x7E, "b4"); b.E(0x8B, 0x04, 0x95); b.D(table);   // eax = min(eax, T[phase])
+        b.L("b4");
         b.E(0x50, 0xDB, 0x04, 0x24, 0xD8, 0x35); b.D(k200); b.E(0xD9, 0x5E, site.Interp, 0x58);   // [interp] = eax / 200
-        b.E(0x5A, 0x58, 0x8B, 0x0D); b.D(exitGlobal); b.E(0xC3);        Write(proc, stubB, b.Done(0x100));
+        b.E(0x59, 0x5A, 0x58, 0x8B, 0x0D); b.D(exitGlobal); b.E(0xC3);        Write(proc, stubB, b.Done(0x100));
 
         // skip=schedinterp: keep the game's own interp (phase / 6). for tracking down turret wobble (#11)
         var hooks = new List<Tuple<uint, uint>> { Tuple.Create(site.Advance, stubA) };
