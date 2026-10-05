@@ -26,11 +26,11 @@ To change the fps run the setup again or edit `RA3HighFps.ini` (the zip has read
 
 **Coming from v1.6 or older?** You don't need the Steam launch option anymore, clear it (right-click the game > Properties > Launch Options). The setup swaps the old `RA3HighFps.exe` for one that just starts the game, so leaving it is fine. If you install by hand, clear it or delete the old `RA3HighFps.exe`, otherwise the old version patches first and the new fixes don't run.
 
-**Linux (Steam Proton / Wine):** the dll can't start .NET under Proton, but Proton runs `RA3HighFps.exe` fine, so that does the patching there. Copy `CnCFpsUnlocker.dll` and `RA3HighFps.ini` where the table says, put `RA3HighFps.exe` in the main game folder (next to `RA3.exe` / `CNC3.exe` / `CNC3EP1.exe`), and set a launch option that swaps the game's launcher for it (thanks tomikaka22 for figuring this out):
+**Linux (Steam Proton / Wine):** the dll can't start .NET under Proton, but Proton runs `RA3HighFps.exe` fine, so that does the patching there. Copy `CnCFpsUnlocker.dll` and `RA3HighFps.ini` where the table says, put `RA3HighFps.exe` in the main game folder (next to `runme.exe` / `RA3EP1.exe` / `CNC3.exe` / `CNC3EP1.exe`), and set a launch option that swaps the game's launcher for it (thanks tomikaka22 for figuring this out):
 
 | Game | Launch option |
 |---|---|
-| Red Alert 3 | `eval "$(echo "%command%" \| sed 's/RA3\.exe/RA3HighFps.exe/i')"` |
+| Red Alert 3 | `eval "$(echo "%command%" \| sed 's/runme\.exe/RA3HighFps.exe/i')"` (Steam starts RA3 through runme.exe) |
 | Uprising | `eval "$(echo "%command%" \| sed 's/RA3EP1\.exe/RA3HighFps.exe/i')"` |
 | Tiberium Wars | `eval "$(echo "%command%" \| sed 's/CNC3\.exe/RA3HighFps.exe/i')"` |
 | Kane's Wrath | `eval "$(echo "%command%" \| sed 's/CNC3EP1\.exe/RA3HighFps.exe/i')"` |
