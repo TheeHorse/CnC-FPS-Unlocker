@@ -42,7 +42,7 @@ static class Program
             zoom = Math.Min(zoom, 1.5f);   // further out the ground/water stops drawing at the top on hilly maps (#10)
             int hz = MonitorHz();
             if (hz >= 30 && fps > hz / 15 * 15) fps = Math.Max(30, hz / 15 * 15);
-            img = File.ReadAllBytes(exe);
+            img = MapImage(File.ReadAllBytes(exe));
             skip = (ReadIni(ini, "skip") ?? "").ToLowerInvariant();
             // bfme2: same engine family, its own code shapes (cdq/idiv), so its own path
             BfmeSites bfme = Scan(img, FrameMsSig).Count == 0 ? FindBfme(img) : null;
@@ -1466,7 +1466,25 @@ static class Program
     {
         int pe = BitConverter.ToInt32(img, 0x3C);
         int sec = pe + 24 + BitConverter.ToUInt16(img, pe + 20);
-        return (int)(BitConverter.ToUInt32(img, sec + 20) + BitConverter.ToUInt32(img, sec + 16));
+        return (int)(BitConverter.ToUInt32(img, sec + 12) + BitConverter.ToUInt32(img, sec + 16));
+    }
+
+    // exe file -> memory layout, so offset == va - ImageBase everywhere.
+    // most builds are already laid out that way, bfme2 1.06 isn't (.text at file 0x600, va 0x1000)
+    static byte[] MapImage(byte[] file)
+    {
+        int pe = BitConverter.ToInt32(file, 0x3C), n = BitConverter.ToUInt16(file, pe + 6), opt = pe + 24;
+        int secs = opt + BitConverter.ToUInt16(file, pe + 20);
+        var img = new byte[Math.Max(BitConverter.ToInt32(file, opt + 56), file.Length)];
+        Array.Copy(file, img, BitConverter.ToInt32(file, opt + 60));   // headers
+        for (int i = 0; i < n; i++)
+        {
+            int s = secs + i * 40;
+            int va = BitConverter.ToInt32(file, s + 12), raw = BitConverter.ToInt32(file, s + 20), size = BitConverter.ToInt32(file, s + 16);
+            size = Math.Min(size, Math.Min(file.Length - raw, img.Length - va));
+            if (size > 0) Array.Copy(file, raw, img, va, size);
+        }
+        return img;
     }
 
     // particle manager update: sim step (fixed 30hz, no delta) then rebuilds draw buckets.
