@@ -123,6 +123,18 @@ The view's `setZoom` (`0x616BE0` in 1.13) clamps zoom between two values from a 
 
 Same problem as the RA3 fades, different code. A drawable's fade (dying units, and the big ripple the Ion Cannon leaves on the ground, #5) stamps `getFrame()` into `[drawable+454h]` and every frame adds `getFrame - [+454h]` to its progress (`[+21Ch]`, length in 30 fps frames at `[+220h]`), so at 165 the ripple was gone in a blink. The three setters and the update now get the 30hz frame number. A second timer next to it (`[+458h]`, `value += max(1, frames) * rate`) gets the 30hz frame too, and the `max(1, ...)` becomes `max(0, ...)`, otherwise it would still step every drawn frame. KW 1.3 `0x4B45B1`, `0x4B8D65`, `0x4B8EA9`; TW 1.10 `0x46E918`, `0x4730EF`, `0x473233`.
 
+## Battle for Middle-earth II
+
+Same engine family as C&C3/RA3 and the same design: render fps `[0xD9F60C]` = 30 with the logic rate right before it `[0xD9F608]`, except logic is **5** ticks a second, not 15. Each tick is still 6 phases (the C&C3 scheduler code is basically the same), so at 30 fps it's one phase per frame already. It's compiled differently (`cdq / idiv` instead of `xor edx,edx / div`), so it has its own signatures:
+
+- the 8 fps reads that do pacing get the new fps: the `1000 / fps` frame length init and the `fps / logic` frames-per-tick reads. The 436 `fps / 2` inits and the `fimul [fps]` time units are left alone, same rules as the other games
+- the frame limiter doesn't use the fps global at all, it waits `1000 / ([engine+0Ch] * netscale)`, `[engine+0Ch]` being `FramesPerSecondLimit` from GameData.ini. That `fild` (`0x63A19C`) reads our fps instead
+- the time-based scheduler from the other games, with a 200 ms tick instead of 66.67 (the first test ran 3x fast because it was still the C&C3 tick length). Before each phase BFME2 also tells the client which sub-frame it is (`0x6251A3`), the scheduler does that for the phases it runs itself too
+- the game client sets the W3D frame length to 1000/30 at runtime (`0x44BF5C`), which put animations, water and the menu back on 30 fps time. The setter now stores `value * 30 / fps`
+- `W3DView::scrollBy` (`0x48C774`, the `SCROLL_RESOLUTION 250` one) gets the same 30/fps step scaling as C&C3
+
+`game.dat` asks for admin rights, so anything measuring it from outside has to run as admin too.
+
 ## Uprising rope/trail crash
 
 Uprising has a renderer RA3 doesn't (`0x8B7060` in 1.1, `0x8CF210` in 1.0) that turns a chain of simulated points into a tube: (points - 1) * sides * 4 vertices. It locks a vertex buffer for that (vtable `+0Ch` on `[esi+0A0h]`) and starts writing without checking what came back. When the lock fails it gets 0 and the first write (`mov [eax+ebx],ebp` at `0x8B7B7F`) crashes writing address 0. That's the Desolator crash (#18). Now a failed lock sets the draw count `[esi+94h]` to 0 and leaves the function the same way it does when there are no points, so that effect just doesn't draw for that frame.

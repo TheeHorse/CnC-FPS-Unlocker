@@ -1,5 +1,5 @@
-// C&C FPS Unlocker - TheeHorse 2026
-// GPL v3 or later, see LICENSE. https://github.com/TheeHorse/CnC-FPS-Unlocker
+// SAGE Unlocked - TheeHorse 2026
+// GPL v3 or later, see LICENSE. https://github.com/TheeHorse/SAGE-Unlocked
 //
 // CnCFpsUnlocker.dll: the actual fixes. d3d9.dll / dinput8.dll (dll/proxy.c) loads this inside the game
 // right before it starts, it reads RA3HighFps.ini and patches the game's own memory. nothing on disk
@@ -43,12 +43,23 @@ static class Program
             int hz = MonitorHz();
             if (hz >= 30 && fps > hz / 15 * 15) fps = Math.Max(30, hz / 15 * 15);
             img = File.ReadAllBytes(exe);
+            skip = (ReadIni(ini, "skip") ?? "").ToLowerInvariant();
+            // bfme2: same engine family, its own code shapes (cdq/idiv), so its own path
+            BfmeSites bfme = Scan(img, FrameMsSig).Count == 0 ? FindBfme(img) : null;
+            if (bfme != null)
+            {
+                if (BitConverter.ToUInt32(Read(proc, bfme.Fps[0], 4), 0) != BitConverter.ToUInt32(img, (int)(bfme.Fps[0] - ImageBase)))
+                    return 2;
+                ApplyPatchesBfme(proc, img, fps, bfme);
+                WriteLog(dir, DateTime.Now + "  " + how + ", fps=" + fps + (skip != "" ? ", skip=" + skip : "") + ", exe=" + Path.GetFileName(exe) +
+                    " (bfme2)\r\n" + found + "\r\n" + patched + "\r\n");
+                return 1;
+            }
             // already patched (old v1.6 launcher still set as the steam launch option, or RA3HighFps.exe got there first)
             uint render = FindRenderFps(img);
             List<uint> pacing = FindPacingSites(img, render, render - 4);
             if (pacing.Count > 0 && BitConverter.ToUInt32(Read(proc, pacing[0], 4), 0) != BitConverter.ToUInt32(img, (int)(pacing[0] - ImageBase)))
                 return 2;
-            skip = (ReadIni(ini, "skip") ?? "").ToLowerInvariant();
             ApplyPatches(proc, img, fps, zoom, true, null, false);
             WriteLog(dir, DateTime.Now + "  " + how + ", fps=" + fps + ", zoom=" + zoom +
                 (skip != "" ? ", skip=" + skip : "") + ", exe=" + Path.GetFileName(exe) + "\r\n" + found + "\r\n" + patched + "\r\n");
@@ -954,7 +965,8 @@ static class Program
     // meaning 120fps ran 20 ticks/s and slow pcs went slow-mo. so: schedule ticks off the clock instead
     // (every 66.67ms, in 1/3ms units so it's exact), run whatever phases are due each frame, and set
     // interp from the time so movement stays smooth
-    class SchedSite { public uint Advance, Exit, TimeFn; public byte Phase, Interp; public uint Dispatch; }
+    // PreGlobal/PreOff/PreFn: bfme2 calls PreFn([[PreGlobal]+PreOff] * 10 + phase - 1) before each dispatch
+    class SchedSite { public uint Advance, Exit, TimeFn; public byte Phase, Interp; public uint Dispatch; public uint PreGlobal, PreFn; public byte PreOff; public int Tick = 200; }   // Tick: logic tick in 1/3 ms (200 = 15 hz, 600 = 5 hz)
 
     const string SchedPatternA = "8B 0D ?? ?? ?? ?? BB 01 00 00 00 88 99 C4 00 00 00 8B 4E 58 83 F9 06 75 1A 80 7E 64 00 74 14 A1 ?? ?? ?? ?? 33 D2 F7 35";
     const string SchedPatternB = "8B 16 50 8B 82 90 00 00 00 8B CE FF D0 8B 0D ?? ?? ?? ?? 8B 11 8B 82 A0 00 00 00 5F 5E 5B 83 C4 04";
@@ -1002,10 +1014,11 @@ static class Program
         // phase k is due once (time into the tick + this frame) reaches k/6, the moment stock has interp = k/6.
         // interp then rises smoothly from k/6 toward (k+1)/6 until the next phase. at 90 that's stock exactly.
         // (it used to run phase k at (k-1)/6, so interp sat ~1/6 behind the phase that just ran: turrets wobbled, #11)
-        foreach (var e in new[] { 30, 63, 97, 130, 163, 197 }.Select((v, i) => new { v, i })) Write(proc, table + (uint)(e.i * 4), BitConverter.GetBytes(e.v));
+        int T = site.Tick;   // 1/3 ms per logic tick
+        for (int k = 1; k <= 6; k++) Write(proc, table + (uint)((k - 1) * 4), BitConverter.GetBytes(k * T / 6 - 3));   // 30 63 97 130 163 197 at 15 hz
         uint exitGlobal = BitConverter.ToUInt32(img, (int)(site.Exit + 2 - ImageBase));
         byte ph = site.Phase;
-        Write(proc, k200, BitConverter.GetBytes(200f));
+        Write(proc, k200, BitConverter.GetBytes((float)T));
 
         // stub A: replaces mov ecx,[esi+phase] / cmp ecx,6
         var a = new Asm(stubA);
@@ -1021,7 +1034,7 @@ static class Program
         a.E(0x83, 0x3D); a.D(pend); a.E(0x00); a.J(0x74, "nopend");  // started a tick last frame?
         a.E(0xC7, 0x05); a.D(pend); a.D(0);
         a.E(0x83, 0xF9, 0x06); a.J(0x72, "nopend");                 // wrapped = it started
-        a.E(0x81, 0x2D); a.D(t0); a.D(200);                          // network held it back, undo
+        a.E(0x81, 0x2D); a.D(t0); a.D((uint)T);                      // network held it back, undo
         a.L("nopend");
         a.E(0x8B, 0xD0, 0x2B, 0x15); a.D(t0);                        // edx = t = now3 - tickStart
         a.E(0x50, 0x2B, 0x05); a.D(prevA);                           // push eax / eax = frame length
@@ -1033,12 +1046,12 @@ static class Program
         a.E(0x03, 0xD0, 0x58);                                       // edx = t + frame length / pop eax
         a.E(0x83, 0xF9, 0x06); a.J(0x72, "mid");
         // phase 6 done. phase 1 of the next tick is due at 200 + 33 (thresholds are 1ms early, now3 rounds down)
-        a.E(0x81, 0xFA); a.D(230); a.J(0x7C, "idle");
-        a.E(0x81, 0x05); a.D(t0); a.D(200);                          // tickStart += 200
+        a.E(0x81, 0xFA); a.D((uint)(T + T / 6 - 3)); a.J(0x7C, "idle");
+        a.E(0x81, 0x05); a.D(t0); a.D((uint)T);                      // tickStart += one tick
         a.E(0xA3); a.D(tickFrame);
         a.E(0xC7, 0x05); a.D(pend); a.D(1);
         a.E(0x8B, 0xD0, 0x2B, 0x15); a.D(t0);                        // >2 ticks behind, resync
-        a.E(0x81, 0xFA); a.D(400); a.J(0x7E, "pass");
+        a.E(0x81, 0xFA); a.D((uint)(2 * T)); a.J(0x7E, "pass");
         a.E(0xA3); a.D(t0); a.J(0xEB, "pass");
         a.L("mid");
         // count timetable entries <= t. phases 3-6 are the object buckets so spread them out
@@ -1050,7 +1063,13 @@ static class Program
         a.E(0x3B, 0xC1); a.J(0x76, "idle");                          // nothing due
         a.L("loop");                                                 // all but the last one
         a.E(0x8D, 0x51, 0x01, 0x3B, 0xD0); a.J(0x73, "pass");
-        a.E(0x89, 0x56, ph, 0x50, 0x52, 0x8B, 0xCE, 0x8B, 0x16, 0xFF, 0x92); a.D(site.Dispatch);   // [phase]=n / dispatch(n)
+        a.E(0x89, 0x56, ph, 0x50);                                   // [phase]=n / push eax
+        if (site.PreFn != 0)
+        {
+            a.E(0x8B, 0x0D); a.D(site.PreGlobal); a.E(0x8B, 0x49, site.PreOff, 0x6B, 0xC9, 0x0A, 0x8D, 0x4C, 0x11, 0xFF);   // ecx = [[g]+off]*10 + n - 1
+            a.E(0x52, 0x51); a.Rel(0xE8, site.PreFn); a.E(0x83, 0xC4, 0x04, 0x5A);   // push n / push ecx / call / add esp,4 / pop n
+        }
+        a.E(0x52, 0x8B, 0xCE, 0x8B, 0x16, 0xFF, 0x92); a.D(site.Dispatch);   // dispatch(n)
         a.E(0x58, 0x8B, 0x4E, ph); a.J(0xEB, "loop");
         a.L("idle");
         a.E(0x59, 0x5A, 0x58, 0x83, 0xC4, 0x04, 0x57); a.Rel(0xE9, site.Exit);
@@ -1071,7 +1090,7 @@ static class Program
         b.E(0x2B, 0x05); b.D(t0); b.E(0x03, 0xC2);                           // eax = now - tickStart + frame length
         b.E(0x85, 0xC0); b.J(0x7D, "b1"); b.E(0x33, 0xC0);
         b.L("b1");
-        b.E(0x3D); b.D(200); b.J(0x7E, "b2"); b.E(0xB8); b.D(200);
+        b.E(0x3D); b.D((uint)T); b.J(0x7E, "b2"); b.E(0xB8); b.D((uint)T);
         b.L("b2");
         // keep it between phase/6 and (phase+1)/6, it never runs ahead of what logic did
         b.E(0x8B, 0x56, ph, 0x8D, 0x4A, 0xFF, 0x83, 0xF9, 0x05); b.J(0x77, "b4");     // edx = phase / ecx = phase-1 / ja (not 1..6)
@@ -1319,6 +1338,127 @@ static class Program
         Write(proc, s.Guard, g.ToArray());
         // je skip -> je cache stub
         Write(proc, s.Guard + 16, u(cacheStub - (s.Guard + 20)));
+    }
+
+    // ---- bfme2 ----
+    // render 30 / logic 5 next to each other like c&c3 (15/30), 6 phases per tick, same scheduler design.
+    // differences: compiled with cdq/idiv, and the frame limiter waits 1000 / (engine max fps [engine+0Ch] * net scale)
+    // instead of using the render fps global
+    // mov eax,1000 / cdq / idiv [render_fps] / mov [frame_ms],eax   (w3d ms per client frame)
+    static readonly int[] BfmeFrameMsSig = { 0xB8, 0xE8, 0x03, 0x00, 0x00, 0x99, 0xF7, 0x3D, -1, -1, -1, -1, 0xA3 };
+    // call [timeGetTime] / fild [esi+0Ch] / mov edi,eax / fmul [netscale] / fdivr [1000.0] / call _ftol
+    const string BfmeLimiterPattern = "FF 15 ?? ?? ?? ?? DB 46 0C 8B F8 D8 0D ?? ?? ?? ?? D8 3D ?? ?? ?? ?? E8";
+    // per-frame update: mov ecx,[esi+phase] / cmp ecx,6 / jne / cmp byte [esi+x],0 / je / mov eax,[fps] / cdq / idiv [logic]
+    const string BfmeAdvancePattern = "8B 4E ?? 83 F9 06 75 ?? 80 7E ?? 00 74 ?? A1";
+    // its interp: [ecx+interp] = [ecx+phase] / [ecx+framesPerTick], clamped 0..1
+    const string BfmeInterpPattern = "F3 0F 2A 49 ?? F3 0F 2A 41 ?? F3 0F 5E C1 0F 57 C9 0F 2F C8 F3 0F 11 41";
+    // exit of the per-frame update: mov ecx,[global] / mov eax,[ecx] / call [eax+x] / pop edi / pop esi / pop ebx / leave / ret
+    const string BfmeExitPattern = "8B 0D ?? ?? ?? ?? 8B 01 FF 90 ?? 00 00 00 5F 5E 5B C9 C3";
+    // dispatch(phase): mov edx,[esi] / push eax / mov ecx,esi / call [edx+x]
+    const string BfmeDispatchPattern = "8B 16 50 8B CE FF 92 ?? 00 00 00";
+
+    // game client's frame length setter (w3d ms per drawn frame): cvttss2si eax,[esp+4] / mov [frame_ms],eax / ret 4.
+    // it gets set to 1000/30 at runtime, which put animations, water etc back on 30 fps time (8x fast at 240)
+    const string BfmeFrameMsSetterPattern = "F3 0F 2C 44 24 04 A3 ?? ?? ?? ?? C2 04 00";
+    // W3DView::scrollBy (SCROLL_RESOLUTION 250), same fix as c&c3: scale the step through its vtable slot
+    const string BfmeScrollByPattern = "55 8B EC 83 EC 64 A1 ?? ?? ?? ?? 80 B8 C0 00 00 00 00 53 8B D9 74 06 80 7B 44 00 75 09 80 BB 01 25 00 00 00 74 07 33 C0 E9";
+
+    class BfmeSites { public uint Render, Logic, Limiter, TimeIat, FrameMs, FrameMsSetter, ScrollFunc, ScrollSlot; public List<uint> Fps = new List<uint>(); public SchedSite Sched; }
+
+    static BfmeSites FindBfme(byte[] img)
+    {
+        var hits = Scan(img, BfmeFrameMsSig);
+        if (hits.Count != 1) return null;
+        var b = new BfmeSites { Render = BitConverter.ToUInt32(img, hits[0] + 8), FrameMs = BitConverter.ToUInt32(img, hits[0] + 13) };
+        b.Logic = b.Render - 4;
+        Func<uint, int> val = va => { int o = (int)(va - ImageBase); return o > 0 && o + 4 <= img.Length ? BitConverter.ToInt32(img, o) : -1; };
+        if (val(b.Render) != 30 || val(b.Logic) != 5) return null;
+        byte[] R = BitConverter.GetBytes(b.Render), L = BitConverter.GetBytes(b.Logic);
+        Func<int, byte[], bool> at = (i, x) => img[i] == x[0] && img[i + 1] == x[1] && img[i + 2] == x[2] && img[i + 3] == x[3];
+        int end = TextEnd(img);
+        b.Fps.Add(ImageBase + (uint)hits[0] + 8);   // frame_ms init
+        for (int i = 0x1004; i < end - 16; i++)
+        {
+            if (!at(i, R)) continue;
+            // mov eax,[fps] / cdq / idiv [logic] = frames per tick
+            if (img[i - 1] == 0xA1 && img[i + 4] == 0x99 && img[i + 5] == 0xF7 && img[i + 6] == 0x3D && at(i + 7, L)) b.Fps.Add(ImageBase + (uint)i);
+            // cvtsi2ss xmm,[fps] / cvtsi2ss xmm,[logic] (the same ratio as floats)
+            else if (img[i - 4] == 0xF3 && img[i - 3] == 0x0F && img[i - 2] == 0x2A && img[i + 4] == 0xF3 && img[i + 5] == 0x0F && img[i + 6] == 0x2A && at(i + 8, L))
+                b.Fps.Add(ImageBase + (uint)i);
+        }
+        if (b.Fps.Count < 4) return null;
+        uint lim = FindUnique(img, BfmeLimiterPattern);
+        if (lim == 0) return null;
+        b.Limiter = lim + 6; b.TimeIat = BitConverter.ToUInt32(img, (int)(lim + 2 - ImageBase));
+        uint set = FindUnique(img, BfmeFrameMsSetterPattern);
+        if (set != 0 && BitConverter.ToUInt32(img, (int)(set - ImageBase) + 7) == b.FrameMs) b.FrameMsSetter = set;
+        b.ScrollFunc = FindUnique(img, BfmeScrollByPattern);
+        if (b.ScrollFunc != 0)
+            for (int o = TextEnd(img) & ~3; o + 4 <= img.Length; o += 4)
+                if (BitConverter.ToUInt32(img, o) == b.ScrollFunc) { if (b.ScrollSlot != 0) { b.ScrollSlot = 0; break; } b.ScrollSlot = ImageBase + (uint)o; }
+        // scheduler hooks
+        uint adv = FindUnique(img, BfmeAdvancePattern), ip = FindUnique(img, BfmeInterpPattern);
+        if (adv != 0 && ip != 0 && at((int)(adv - ImageBase) + 15, R))
+        {
+            int a = (int)(adv - ImageBase);
+            byte phase = img[a + 2];
+            if (img[(int)(ip - ImageBase) + 9] == phase)
+            {
+                uint ex = 0, disp = 0;
+                foreach (uint m in FindAll(img, BfmeExitPattern)) if (m > adv && m < adv + 0x180) { ex = m; break; }
+                foreach (uint m in FindAll(img, BfmeDispatchPattern)) if (m > adv && m < adv + 0x180) { disp = BitConverter.ToUInt32(img, (int)(m - ImageBase) + 7); break; }
+                // the per-phase client call right after the advance: mov ecx,[g] / mov ecx,[ecx+off] / imul ecx,ecx,10 / lea eax,[ecx+eax-1] / push edi / push eax / call fn
+                uint pre = FindUnique(img, "8B 0D ?? ?? ?? ?? 8B 49 ?? 6B C9 0A 8D 44 01 FF 57 50 E8");
+                if (ex != 0 && disp != 0 && pre > adv && pre < adv + 0x40)
+                    b.Sched = new SchedSite { Advance = adv, Exit = ex, Phase = phase, Interp = img[(int)(ip - ImageBase) + 24], Dispatch = disp, Tick = 3000 / 5,
+                                              PreGlobal = BitConverter.ToUInt32(img, (int)(pre - ImageBase) + 2), PreOff = img[(int)(pre - ImageBase) + 8], PreFn = CallTarget(img, pre + 18) };
+            }
+        }
+        return b;
+    }
+
+    static void ApplyPatchesBfme(IntPtr proc, byte[] img, int fps, BfmeSites b)
+    {
+        bool sched = b.Sched != null && On("sched");
+        found = "found: fps limiter" + (b.Sched != null ? " sched" : "") + (b.FrameMsSetter != 0 ? " animclock" : "") + (b.ScrollSlot != 0 ? " scroll" : "") +
+                " | missing:" + (b.Sched == null ? " sched" : "") + (b.FrameMsSetter == 0 ? " animclock" : "") + (b.ScrollSlot == 0 ? " scroll" : "");
+        IntPtr mem = Alloc(proc, 4096);
+        if (mem == IntPtr.Zero) throw new Exception("couldn't allocate patch memory");
+        uint m = (uint)mem;
+        Write(proc, m, BitConverter.GetBytes(fps));
+        Redirect(proc, b.Fps, m);
+        // limiter: fild [esi+0Ch] / mov edi,eax (5 bytes) -> call: fild [fps] / mov edi,eax / ret
+        if (On("limiter"))
+        {
+            var s = new List<byte> { 0xDB, 0x05 }; s.AddRange(BitConverter.GetBytes(m)); s.AddRange(new byte[] { 0x8B, 0xF8, 0xC3 });
+            Write(proc, m + 0x300, s.ToArray());
+            var p = new List<byte> { 0xE8 }; p.AddRange(BitConverter.GetBytes(m + 0x300 - (b.Limiter + 5)));
+            Write(proc, b.Limiter, p.ToArray());
+        }
+        // frame length setter: frame_ms = arg * 30 / fps (follows whatever the game asks for, in our frames)
+        if (b.FrameMsSetter != 0 && On("animclock"))
+        {
+            Write(proc, m + 0x350, BitConverter.GetBytes(30f / fps));
+            var s = new Asm(m + 0x320);
+            s.E(0xF3, 0x0F, 0x10, 0x44, 0x24, 0x04, 0xF3, 0x0F, 0x59, 0x05); s.D(m + 0x350);   // movss xmm0,[esp+4] / mulss xmm0,[30/fps]
+            s.E(0xF3, 0x0F, 0x2C, 0xC0, 0xA3); s.D(b.FrameMs); s.E(0xC2, 0x04, 0x00);           // cvttss2si eax,xmm0 / mov [frame_ms],eax / ret 4
+            Write(proc, m + 0x320, s.Done(0x30));
+            var p = new List<byte> { 0xE9 }; p.AddRange(BitConverter.GetBytes(m + 0x320 - (b.FrameMsSetter + 5)));
+            Write(proc, b.FrameMsSetter, p.ToArray());
+        }
+        if (b.ScrollSlot != 0 && On("scroll") && fps > 30) PatchScrollBy(proc, b.ScrollSlot, b.ScrollFunc, fps, m + 0x4F0, m + 0x4F8, m + 0x3C0);
+        if (sched)
+        {
+            // its clock is timeGetTime straight from the import table: jmp [iat]
+            var t = new List<byte> { 0xFF, 0x25 }; t.AddRange(BitConverter.GetBytes(b.TimeIat));
+            Write(proc, m + 0xF80, t.ToArray());
+            b.Sched.TimeFn = m + 0xF80;
+            PatchScheduler(proc, img, b.Sched, m, m);
+        }
+        FlushCode(proc);
+        Func<IEnumerable<uint>, string> hex = l => string.Join(" ", l.Where(a => a != 0).Select(a => "0x" + a.ToString("X")));
+        patched = "patch memory 0x" + m.ToString("X") + "-0x" + (m + 0xFFF).ToString("X") + "\r\nsites: fps " + hex(b.Fps) + " | limiter " + hex(new[] { b.Limiter }) + " | animclock " + hex(new[] { b.FrameMsSetter }) + " | scroll " + hex(new[] { b.ScrollSlot }) +
+            (b.Sched != null ? " | sched " + hex(new[] { b.Sched.Advance, b.Sched.Exit }) + string.Format(" phase {0:X} interp {1:X} dispatch {2:X}", b.Sched.Phase, b.Sched.Interp, b.Sched.Dispatch) : "");
     }
 
     // raw offset == rva in these exes

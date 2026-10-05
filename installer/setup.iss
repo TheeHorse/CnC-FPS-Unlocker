@@ -1,5 +1,5 @@
-; C&C FPS Unlocker setup - TheeHorse 2026
-; GPL v3 or later, see LICENSE. https://github.com/TheeHorse/CnC-FPS-Unlocker
+; SAGE Unlocked setup - TheeHorse 2026
+; GPL v3 or later, see LICENSE. https://github.com/TheeHorse/SAGE-Unlocked
 ;
 ; Inno Setup script (https://jrsoftware.org/isinfo.php). Same job as the old Setup.cs:
 ; find the games, put the drop-in files (d3d9.dll or dinput8.dll, CnCFpsUnlocker.dll,
@@ -9,17 +9,17 @@
 #ifndef Files
   #define Files "..\bin"
 #endif
-#define Version "1.7"
+#define Version "1.9"
 
 [Setup]
 AppId=TheeHorse.CnCFpsUnlocker
-AppName=C&C FPS Unlocker
+AppName=SAGE Unlocked
 AppVersion={#Version}
-AppVerName=C&C FPS Unlocker {#Version}
+AppVerName=SAGE Unlocked {#Version}
 AppPublisher=TheeHorse
-AppPublisherURL=https://github.com/TheeHorse/CnC-FPS-Unlocker
+AppPublisherURL=https://github.com/TheeHorse/SAGE-Unlocked
 VersionInfoVersion={#Version}.0.0
-VersionInfoDescription=C&C FPS Unlocker Setup
+VersionInfoDescription=SAGE Unlocked Setup
 CreateAppDir=no
 Uninstallable=no
 DisableProgramGroupPage=yes
@@ -29,7 +29,7 @@ WizardStyle=classic
 ; no compression: the files are tiny, and packed data makes some scanners think it's obfuscated
 Compression=none
 OutputDir=.
-OutputBaseFilename=CnC-FPS-Unlocker-Setup
+OutputBaseFilename=SAGE-Unlocked-Setup
 
 [Files]
 Source: "{#Files}\d3d9.dll"; Flags: dontcopy
@@ -167,10 +167,17 @@ begin
   end;
 end;
 
+{ bfme2: no SkuDefs, the launcher (lotrbfme2.exe) starts game.dat }
+function IsBfme2Folder(dir: String): Boolean;
+begin
+  Result := (dir <> '') and FileExists(AddBackslash(dir) + 'game.dat') and FileExists(AddBackslash(dir) + 'lotrbfme2.exe');
+end;
+
 function ExePath(game: String): String;
 var lines: TArrayOfString; i: Integer; sku: String;
 begin
   Result := '';
+  if IsBfme2Folder(game) then begin Result := AddBackslash(game) + 'game.dat'; exit; end;
   sku := LatestSkuDef(game);
   if (sku = '') or not LoadStringsFromFile(sku, lines) then exit;
   for i := 0 to GetArrayLength(lines) - 1 do
@@ -195,7 +202,8 @@ function IsGameFolder(dir: String): Boolean;
 var fr: TFindRec;
 begin
   Result := (dir <> '') and FindFirst(AddBackslash(dir) + '*_1.*.SkuDef', fr);
-  if Result then FindClose(fr);
+  if Result then FindClose(fr)
+  else Result := IsBfme2Folder(dir);
 end;
 
 function Known(dir: String): Boolean;
@@ -221,6 +229,7 @@ function GameName(dir: String): String;
 var leaf: String;
 begin
   leaf := ExtractFileName(RemoveBackslashUnlessRoot(dir));
+  if IsBfme2Folder(dir) then begin Result := 'Battle for Middle-earth II (new, not well tested yet)'; exit; end;
   case Lowercase(leaf) of
     'command and conquer red alert 3': Result := 'Red Alert 3';
     'command and conquer 3 tiberium wars': Result := 'Tiberium Wars';
@@ -289,6 +298,7 @@ begin
           key := roots[i] + '\' + names[j];
           if not (RegQueryStringValue(root, key, 'Install Dir', dir) or RegQueryStringValue(root, key, 'InstallPath', dir)) then continue;
           if not IsGameFolder(dir) or Known(dir) then continue;
+          if IsBfme2Folder(dir) then begin AddGame(GameName(dir), dir); continue; end;   { bfme2 installs register here too }
           if not (RegQueryStringValue(root, key, 'ProductName', lbl) or RegQueryStringValue(root, key, 'DisplayName', lbl)) then lbl := names[j];
           StringChangeEx(lbl, 'Command & Conquer ', '', True);
           AddGame(lbl + ' (EA app)', dir);
@@ -307,10 +317,10 @@ procedure AddFolderClick(Sender: TObject);
 var dir: String;
 begin
   dir := '';
-  if not BrowseForFolder('Pick the game''s install folder (the one with the .SkuDef files, e.g. ...\Red Alert 3)', dir, False) then exit;
+  if not BrowseForFolder('Pick the game''s install folder (the one with the .SkuDef files, e.g. ...\Red Alert 3, or the BFME2 folder with game.dat)', dir, False) then exit;
   if not IsGameFolder(dir) then
   begin
-    MsgBox('That doesn''t look like a supported game folder (no .SkuDef files in it).', mbError, MB_OK);
+    MsgBox('That doesn''t look like a supported game folder (no .SkuDef files, or game.dat for BFME2).', mbError, MB_OK);
     exit;
   end;
   if Known(dir) then exit;
@@ -419,7 +429,7 @@ begin
   if not FileExists(ini) then
   begin
     SetArrayLength(lines, 1);
-    lines[0] := '; C&C FPS Unlocker settings (fps: multiple of 15, 30-240; zoom: ra3 only, 1 = off)';
+    lines[0] := '; SAGE Unlocked settings (fps: multiple of 15, 30-240; zoom: ra3 only, 1 = off)';
     SaveStringsToFile(ini, lines, False);
   end;
   SetIni(ini, 'fps', IntToStr(fps));

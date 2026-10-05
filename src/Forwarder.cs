@@ -1,5 +1,5 @@
-// C&C FPS Unlocker - TheeHorse 2026
-// GPL v3 or later, see LICENSE. https://github.com/TheeHorse/CnC-FPS-Unlocker
+// SAGE Unlocked - TheeHorse 2026
+// GPL v3 or later, see LICENSE. https://github.com/TheeHorse/SAGE-Unlocked
 //
 // Replaces the old v1.6 launcher (RA3HighFps.exe). People still have "RA3HighFps.exe" %command% as their
 // Steam launch option, and the old launcher patched the game before the new dll could, so the newer fixes
@@ -35,13 +35,13 @@ static class Forwarder
                 try { return LaunchPatched(here, args); }
                 catch (Exception e)
                 {
-                    MessageBox.Show(e.Message, "C&C FPS Unlocker", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                    MessageBox.Show(e.Message, "SAGE Unlocked", MessageBoxButtons.OK, MessageBoxIcon.Error);
                     return 1;
                 }
             }
-            MessageBox.Show("This file is left over from an older version of the C&C FPS Unlocker and isn't needed anymore.\n\n" +
+            MessageBox.Show("This file is left over from an older version of SAGE Unlocked (formerly C&C FPS Unlocker) and isn't needed anymore.\n\n" +
                 "If it's in your Steam launch options you can clear them (right-click the game > Properties). " +
-                "The game works either way.", "C&C FPS Unlocker", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                "The game works either way.", "SAGE Unlocked", MessageBoxButtons.OK, MessageBoxIcon.Information);
             return 0;
         }
         var start = new ProcessStartInfo(args[i], string.Join(" ", args.Skip(i + 1).Select(Quote)))

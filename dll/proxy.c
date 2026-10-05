@@ -1,4 +1,4 @@
-/* C&C FPS Unlocker drop-in dll - TheeHorse 2026, GPL v3
+/* SAGE Unlocked drop-in dll - TheeHorse 2026, GPL v3
  * d3d9.dll for ra3, dinput8.dll for tw/kw. forwards to the real dll, hooks the game's entry
  * point and runs CnCFpsUnlocker.dll (same patches as the launcher) before the game starts.
  *
