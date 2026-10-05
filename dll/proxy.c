@@ -156,7 +156,19 @@ static void run_patches(void)
     if (((GetRuntimeFn)meta->vt[3])(meta, L"v4.0.30319", &IID_ICLRRuntimeInfo, (void **)&info) < 0) { load_failed(".NET 4 isn't installed", 1); return; }
     if (((GetInterfaceFn)info->vt[9])(info, &CLSID_CLRRuntimeHost, &IID_ICLRRuntimeHost, (void **)&host) < 0) { load_failed("couldn't get the .NET runtime", 1); return; }
     if (((StartFn)host->vt[3])(host) < 0) { load_failed("couldn't start .NET", 1); return; }
-    if (((ExecFn)host->vt[11])(host, assembly, L"DllEntry", L"Run", dll_dir, &ret) < 0) { load_failed("couldn't call into CnCFpsUnlocker.dll", 1); return; }
+    {
+        /* the code says why: 80070002 file not found, 80131040 version mismatch, 80004001 not implemented (wine-mono
+           instead of the real .net 4.8), 80131604 an exception inside CnCFpsUnlocker.dll */
+        HRESULT hr = ((ExecFn)host->vt[11])(host, assembly, L"DllEntry", L"Run", dll_dir, &ret);
+        if (hr < 0)
+        {
+            char step[64] = "couldn't call into CnCFpsUnlocker.dll, error 00000000";
+            int k;
+            for (k = 0; k < 8; k++) step[lstrlenA(step) - 1 - k] = "0123456789ABCDEF"[((DWORD)hr >> (k * 4)) & 15];
+            load_failed(step, 1);
+            return;
+        }
+    }
     /* ret 1 = patched (CnCFpsUnlocker.dll wrote the log). from here on, note any crash */
     if (ret == 1) AddVectoredExceptionHandler(0, on_exception);
 }
