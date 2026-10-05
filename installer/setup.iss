@@ -404,16 +404,11 @@ end;
 
 { ---- installing ---- }
 
-function InstallGame(game: String; fps: Integer; zoom: String; var err: String): Boolean;
-var exe, dir, proxy, ini, old: String; lines: TArrayOfString; i: Integer;
+{ proxy dll + CnCFpsUnlocker.dll + ini into one exe folder }
+function InstallTo(dir, proxy: String; fps: Integer; zoom: String; var err: String): Boolean;
+var ini: String; lines: TArrayOfString;
 begin
   Result := False;
-  exe := ExePath(game);
-  if exe = '' then begin err := 'couldn''t find the game''s exe (SkuDef)'; exit; end;
-  dir := ExtractFilePath(exe);
-  if Lowercase(ExtractFileExt(exe)) = '.game' then proxy := 'd3d9.dll' else proxy := 'dinput8.dll';   { ra3 : tw/kw }
-  ExtractTemporaryFile(proxy);
-  ExtractTemporaryFile('CnCFpsUnlocker.dll');
   if not FileCopy(ExpandConstant('{tmp}\') + proxy, dir + proxy, False) or
      not FileCopy(ExpandConstant('{tmp}\CnCFpsUnlocker.dll'), dir + 'CnCFpsUnlocker.dll', False) then
   begin
@@ -429,6 +424,27 @@ begin
   end;
   SetIni(ini, 'fps', IntToStr(fps));
   SetIni(ini, 'zoom', zoom);
+  Result := True;
+end;
+
+function InstallGame(game: String; fps: Integer; zoom: String; var err: String): Boolean;
+var exe, dir, proxy, old, extra: String; i: Integer;
+begin
+  Result := False;
+  exe := ExePath(game);
+  if exe = '' then begin err := 'couldn''t find the game''s exe (SkuDef)'; exit; end;
+  dir := ExtractFilePath(exe);
+  if Lowercase(ExtractFileExt(exe)) = '.game' then proxy := 'd3d9.dll' else proxy := 'dinput8.dll';   { ra3 : tw/kw }
+  ExtractTemporaryFile(proxy);
+  ExtractTemporaryFile('CnCFpsUnlocker.dll');
+  if not InstallTo(dir, proxy, fps, zoom, err) then exit;
+  { mods run older tw/kw versions: tw 1.9 and kw 1.2 (1.02) work too, so install there as well }
+  for i := 0 to 1 do
+  begin
+    if i = 0 then extra := AddBackslash(game) + 'RetailExe\1.9\' else extra := AddBackslash(game) + 'RetailExe\1.2\';
+    if (Norm(extra) <> Norm(dir)) and (FileExists(extra + 'cnc3game.dat') or FileExists(extra + 'cnc3ep1.dat')) then
+      if not InstallTo(extra, proxy, fps, zoom, err) then exit;
+  end;
   { v1.6 launcher (game folder, or next to the exe). still set as the steam launch option it patches
     first and blocks the dll, so swap it for one that just starts the game }
   for i := 0 to 1 do

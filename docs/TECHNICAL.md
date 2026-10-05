@@ -119,6 +119,10 @@ Stuff that fades in or out (dying units, cloaking, some effects) gets its fade l
 
 The view's `setZoom` (`0x616BE0` in 1.13) clamps zoom between two values from a small "camera limits" object (`[view+26FCh]`, min 350 and max 550 on stock maps). The call that gets the max (`0x616C8E`) goes through a wrapper that multiplies it by the `zoom` value from the ini, but only when there's no network object (`[0xCECF3C]` is null in skirmish and campaign, set online/LAN). Past about 1.75x you can see the edge of the terrain renderer's draw window at the top of the screen (ground stops in a straight line while objects still draw), and on maps with big height differences it already happens at 1.75x (#10), so the setup goes up to 1.5x and the dll caps the ini value at 1.5.
 
+## Fades (TW, KW)
+
+Same problem as the RA3 fades, different code. A drawable's fade (dying units, and the big ripple the Ion Cannon leaves on the ground, #5) stamps `getFrame()` into `[drawable+454h]` and every frame adds `getFrame - [+454h]` to its progress (`[+21Ch]`, length in 30 fps frames at `[+220h]`), so at 165 the ripple was gone in a blink. The three setters and the update now get the 30hz frame number. A second timer next to it (`[+458h]`, `value += max(1, frames) * rate`) gets the 30hz frame too, and the `max(1, ...)` becomes `max(0, ...)`, otherwise it would still step every drawn frame. KW 1.3 `0x4B45B1`, `0x4B8D65`, `0x4B8EA9`; TW 1.10 `0x46E918`, `0x4730EF`, `0x473233`.
+
 ## Uprising rope/trail crash
 
 Uprising has a renderer RA3 doesn't (`0x8B7060` in 1.1, `0x8CF210` in 1.0) that turns a chain of simulated points into a tube: (points - 1) * sides * 4 vertices. It locks a vertex buffer for that (vtable `+0Ch` on `[esi+0A0h]`) and starts writing without checking what came back. When the lock fails it gets 0 and the first write (`mov [eax+ebx],ebp` at `0x8B7B7F`) crashes writing address 0. That's the Desolator crash (#18). Now a failed lock sets the draw count `[esi+94h]` to 0 and leaves the function the same way it does when there are no points, so that effect just doesn't draw for that frame.

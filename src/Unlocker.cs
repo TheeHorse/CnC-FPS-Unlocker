@@ -142,7 +142,7 @@ static class Program
             new { n = "sched", ok = schedSite != null }, new { n = "scroll", ok = scrollSlot != 0 }, new { n = "camerakeys", ok = held != null },
             new { n = "interp", ok = interpWindow.Count > 0 }, new { n = "limiter", ok = limiter != 0 }, new { n = "construction", ok = unpack != 0 },
             new { n = "anim2d", ok = anim2d.Count > 0 }, new { n = "models", ok = modelStep != 0 }, new { n = "particles", ok = pfxSite != 0 },
-            new { n = "fades", ok = fades.Count > 0 }, new { n = "zoom", ok = zoomSite != 0 },
+            new { n = "fades", ok = fades.Count > 0 || fx.Fades.Count > 0 }, new { n = "zoom", ok = zoomSite != 0 },
             new { n = "camsteps", ok = fx.CameraStep != 0 }, new { n = "fxframes", ok = fx.Frame5.Count > 0 }, new { n = "throb", ok = fx.Throb != 0 },
             new { n = "shake", ok = fx.Shake != 0 }, new { n = "traillock", ok = trailLock != 0 }, new { n = "sway", ok = sway != null } };
         found = "found: " + string.Join(" ", have.Where(h => h.ok).Select(h => h.n)) + " | missing: " + string.Join(" ", have.Where(h => !h.ok).Select(h => h.n));
@@ -188,7 +188,8 @@ static class Program
             (held != null ? " | camerakeys " + hex(new[] { held.ZoomIn, held.ZoomOut, held.Rotate }) : "") +
             (trailLock != 0 ? " | traillock " + hex(new[] { trailLock }) : "") +
             (sway != null ? " | sway " + hex(new[] { sway.Guard }) : "") +
-            " | fx " + hex(fx.Frame5.Concat(new[] { fx.TracerUpdate, fx.CameraStep, fx.LaserStep, fx.Throb, fx.Shake }));
+            " | fx " + hex(fx.Frame5.Concat(new[] { fx.TracerUpdate, fx.CameraStep, fx.LaserStep, fx.Throb, fx.Shake })) +
+            (fx.Fades.Count > 0 ? " | cnc3 fades " + hex(fx.Fades.Concat(new[] { fx.PulseSet, fx.PulseUpdate })) : "");
         return sites;
     }
 
@@ -747,7 +748,18 @@ static class Program
     // camera shake: amplitude *= 0.75 every frame
     const string ShakePattern = "A1 ?? ?? ?? ?? 80 B8 44 0F 00 00 00 74 09 80 B8 45 0F 00 00 00 74 22 F3 0F 59 05 ?? ?? ?? ?? F3 0F 11 43 78";
 
-    class Cnc3Fx { public uint CameraStep, LaserStep, Throb, Shake, PfxSite, PfxSim; public List<uint> Frame5 = new List<uint>(); public uint TracerUpdate; }
+    // drawable fades (ion cannon ripple, dying units etc): start stamped with getFrame, the update adds getFrame - start
+    // to the progress, length in 30fps frames. same as the ra3 fades fix
+    const string Cnc3FadeSetPattern = "89 86 20 02 00 00 8B 0D ?? ?? ?? ?? 8B 01 FF 50 78 89 86 54 04 00 00";
+    const string Cnc3FadeSet2Pattern = "89 86 24 02 00 00 8B 0D ?? ?? ?? ?? 8B 01 FF 50 78 89 86 54 04 00 00";
+    const string Cnc3FadeUpdatePattern = "8B 0D ?? ?? ?? ?? 8B 01 FF 50 78 8B D0 8D 8E 54 04 00 00 2B 11 89 01";
+    // a second drawable timer: value += max(1, frames since last) * rate. the max(1) would still step every drawn
+    // frame, so it becomes max(0, ...) with the 30hz frame (= stock at 30)
+    const string Cnc3PulseSetPattern = "8B 0D ?? ?? ?? ?? 8B 01 FF 50 78 89 86 58 04 00 00 5E C2 08 00";
+    const string Cnc3PulseUpdatePattern = "8B 0D ?? ?? ?? ?? 8B 01 53 FF 50 78 8B C8 2B 8E 58 04 00 00 33 D2 42 3B CA";
+
+    class Cnc3Fx { public uint CameraStep, LaserStep, Throb, Shake, PfxSite, PfxSim; public List<uint> Frame5 = new List<uint>(); public uint TracerUpdate;
+                   public List<uint> Fades = new List<uint>(); public uint PulseSet, PulseUpdate; }
 
     static Cnc3Fx FindCnc3Fx(byte[] img, uint modelStep)
     {
@@ -767,6 +779,12 @@ static class Program
         uint th = FindUnique(img, ThrobPattern);
         // framesPerMs: a global set to 0.03 at startup, nothing to check in the file. just make sure it isn't code
         if (th != 0 && dw(th, 22) >= ImageBase + (uint)TextEnd(img)) fx.Throb = th + 22;
+        // fades: all four or none (mixing clocks breaks the subtraction)
+        var fs = FindAll(img, Cnc3FadeSetPattern);
+        uint fs2 = FindUnique(img, Cnc3FadeSet2Pattern), fu = FindUnique(img, Cnc3FadeUpdatePattern);
+        if (fs.Count == 2 && fs2 != 0 && fu != 0) fx.Fades.AddRange(new[] { fs[0] + 12, fs[1] + 12, fs2 + 12, fu + 6 });
+        uint ps = FindUnique(img, Cnc3PulseSetPattern), pu = FindUnique(img, Cnc3PulseUpdatePattern);
+        if (ps != 0 && pu != 0) { fx.PulseSet = ps + 6; fx.PulseUpdate = pu + 6; }
         uint sh = FindUnique(img, ShakePattern);
         if (sh != 0 && FloatAt(img, dw(sh, 27)) == 0.75f) fx.Shake = sh + 27;
         return fx;
@@ -777,7 +795,8 @@ static class Program
     {
         Func<uint, byte[]> u = BitConverter.GetBytes;
         if (fx.CameraStep != 0 && On("camsteps")) Redirect(proc, new List<uint> { fx.CameraStep, fx.LaserStep }, stepVa);
-        if ((fx.Frame5.Count > 0 || fx.TracerUpdate != 0) && On("fxframes"))
+        bool fades = fx.Fades.Count > 0 && On("fades"), pulse = fx.PulseSet != 0 && On("fades");
+        if ((fx.Frame5.Count > 0 || fx.TracerUpdate != 0) && On("fxframes") || fades || pulse)
         {
             var s = new List<byte> { 0x8B, 0x01, 0xFF, 0x50, 0x78, 0x6B, 0xC0, 0x1E };   // mov eax,[ecx] / call [eax+78h] / imul eax,30
             s.AddRange(new byte[] { 0x8B, 0x15 }); s.AddRange(u(fpsVa));                // mov edx,[fps]
@@ -785,16 +804,27 @@ static class Program
             s.Add(0xC3);
             Write(proc, stubVa, s.ToArray());
             // mov eax,[ecx] / call [eax+78h] (5 bytes) -> call stub
-            foreach (uint site in fx.Frame5)
+            var five = new List<uint>();
+            if (On("fxframes")) five.AddRange(fx.Frame5);
+            if (fades) five.AddRange(fx.Fades);
+            if (pulse) five.Add(fx.PulseSet);
+            foreach (uint site in five)
             {
                 var p = new List<byte> { 0xE8 }; p.AddRange(u(stubVa - (site + 5)));
                 Write(proc, site, p.ToArray());
             }
             // mov eax,[ecx] / push edi / call [eax+78h] (6 bytes) -> push edi / call stub
-            if (fx.TracerUpdate != 0)
+            if (fx.TracerUpdate != 0 && On("fxframes"))
             {
                 var p = new List<byte> { 0x57, 0xE8 }; p.AddRange(u(stubVa - (fx.TracerUpdate + 6)));
                 Write(proc, fx.TracerUpdate, p.ToArray());
+            }
+            // mov eax,[ecx] / push ebx / call [eax+78h] -> push ebx / call stub, and inc edx (the max 1) -> nop
+            if (pulse)
+            {
+                var p = new List<byte> { 0x53, 0xE8 }; p.AddRange(u(stubVa - (fx.PulseUpdate + 6)));
+                Write(proc, fx.PulseUpdate, p.ToArray());
+                Write(proc, fx.PulseUpdate + 16, new byte[] { 0x90 });
             }
         }
         if (fx.Throb != 0 && On("throb"))
