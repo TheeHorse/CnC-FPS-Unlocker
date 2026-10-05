@@ -2,7 +2,7 @@
 
 *Formerly C&C FPS Unlocker.*
 
-Play **Red Alert 3**, **C&C 3: Tiberium Wars**, **Kane's Wrath** and now **Battle for Middle-earth II** (new, still being tested) at 60, 120, 165 or whatever fps you want. Free and open source.
+Play **Red Alert 3**, **C&C 3: Tiberium Wars**, **Kane's Wrath** and now **Battle for Middle-earth II** and **Rise of the Witch-king** (new, still being tested) at 60, 120, 165 or whatever fps you want. Free and open source.
 
 These games are locked to 30 fps and if you just unlock them the whole game speeds up. This keeps the game speed normal and only makes it smoother. No effect flicker either.
 
@@ -25,6 +25,7 @@ Two ways, pick whichever you like. Either way there's no launch option to set, y
 | Kane's Wrath (1.3) | `dinput8.dll`, `CnCFpsUnlocker.dll`, `RA3HighFps.ini` | `<KW>\RetailExe\1.3\` |
 | Kane's Wrath (1.02: mods, EA app / Origin / disc) | `dinput8.dll`, `CnCFpsUnlocker.dll`, `RA3HighFps.ini` | `<KW>\RetailExe\1.2\` |
 | Battle for Middle-earth II (new, not well tested yet) | `dinput8.dll`, `CnCFpsUnlocker.dll`, `RA3HighFps.ini` | `<BFME2>\` (next to `game.dat`) |
+| Rise of the Witch-king (new, not well tested yet) | same 3 files (from the BFME2 folder in the zip) | `<RotWK>\` (next to `game.dat`) |
 
 To change the fps run the setup again or edit `RA3HighFps.ini` (the zip has ready-made ones for each fps in `FPS presets`). To uninstall delete `d3d9.dll` / `dinput8.dll`.
 
@@ -55,6 +56,7 @@ Before v1.6 that wasn't true. RA3 ran about 33% fast at 120 and way faster at 24
 
 - **240 fps is experimental** until it's been tested more, some people have had problems with it. If you're on a 240hz monitor and something's weird try 165 or 120
 - **BFME2 support is brand new** and hasn't been tested much yet (only at 240 fps so far). If something looks too fast, choppy or broken, open an issue with your `RA3HighFps.log` (it's in the BFME2 folder)
+- **BFME All In One Launcher / Competitive Arena** delete files they don't know from the game folder, so the mod's 3 files disappear after you play. Start the game with `lotrbfme2.exe` / `lotrbfme2ep1.exe` instead, or copy the files back each time
 - Some effects might still play too fast. The RA3 power plant fog and the TW/KW Ion Cannon should be fixed now but need confirming ([#4](../../issues/4), [#5](../../issues/5))
 
 
@@ -82,7 +84,7 @@ The full story, including how I tracked down the flicker with a frame by frame g
 
 - **Generals / Zero Hour**: logic and rendering use the same clock so this trick doesn't work. Check out [TheSuperHackers/GeneralsGameCode](https://github.com/TheSuperHackers/GeneralsGameCode), they work from EA's released source
 - **Red Alert 2 / Tiberian Sun**: totally different engine, same problem
-- **BFME1 / Rise of the Witch-king**: not yet, BFME2 came first. Same engine family so they're next on the list
+- **BFME1**: not yet. It runs on the older Generals engine where the game logic is tied to the frame rate, so it needs a different approach than BFME2 and RotWK
 
 ## Older versions and mods
 
