@@ -88,7 +88,7 @@ static class Program
         var sb = new StringBuilder();
         int pe = BitConverter.ToInt32(img, 0x3C), n = BitConverter.ToUInt16(img, pe + 6), opt = pe + 24;
         int secs = opt + BitConverter.ToUInt16(img, pe + 20);
-        sb.AppendFormat("exe {0}\r\nsize {1}  timestamp 0x{2:X8}  entry 0x{3:X}\r\n", exe, img.Length,
+        sb.AppendFormat("exe {0}\r\nsize {1}  timestamp 0x{2:X8}  entry 0x{3:X}\r\n", exe, new FileInfo(exe).Length,
             BitConverter.ToUInt32(img, pe + 8), BitConverter.ToUInt32(img, opt + 16));
         for (int i = 0; i < n; i++)
         {
