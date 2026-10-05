@@ -6,7 +6,7 @@ Play **Red Alert 3**, **C&C 3: Tiberium Wars**, **Kane's Wrath** and now **Battl
 
 These games are locked to 30 fps and if you just unlock them the whole game speeds up. This keeps the game speed normal and only makes it smoother. No effect flicker either.
 
-![Setup window](docs/screenshot.png)
+![Setup window](docs/setup.png)
 
 ## Install
 
