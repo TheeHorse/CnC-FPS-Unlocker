@@ -44,6 +44,7 @@ static class Program
             if (hz >= 30 && fps > hz / 15 * 15) fps = Math.Max(30, hz / 15 * 15);
             img = MapImage(File.ReadAllBytes(exe));
             skip = (ReadIni(ini, "skip") ?? "").ToLowerInvariant();
+            offscreenAnim = ReadIni(ini, "offscreenanim") == "1";
             // bfme2: same engine family, its own code shapes (cdq/idiv), so its own path
             BfmeSites bfme = Scan(img, FrameMsSig).Count == 0 ? FindBfme(img) : null;
             if (bfme != null)
@@ -122,6 +123,7 @@ static class Program
 
     // ini skip=fades,interp,... turns single fixes off (for tracking down problems with mods)
     static string skip = "", found = "", patched = "";
+    static bool offscreenAnim = false;   // ini offscreenanim=1: #13 experiment, off by default (didn't make off-screen shadows smooth)
     static bool On(string name) { return !skip.Split(',').Select(s => s.Trim()).Contains(name); }
 
     // proc isn't used, it's always our own process (kept so the patch functions read the same as before)
@@ -147,6 +149,13 @@ static class Program
         Cnc3Fx fx = FindCnc3Fx(img, modelStep);
         uint trailLock = FindTrailLock(img);
         SwaySite sway = FindSway(img);
+        uint stream = FindStreamUpdate(img);
+        List<uint> fpsFrames = FindFpsFrameReads(img, render, sites);
+        Blinks blinks = FindBlinks(img);
+        PulseSite pulse = FindPulse(img);
+        TurretSite turretSite = FindTurretInterp(img);
+        ToppleSite topple = FindTopple(img);
+        uint animGate = FindAnimGate(img);
         if (pfxSite == 0 && fx.PfxSite != 0) { pfxSite = fx.PfxSite; pfxSim = fx.PfxSim; }   // tw / kw
         // for the log: which fixes this exe has, so reports from unknown builds say what's missing
         var have = new[] {
@@ -155,7 +164,7 @@ static class Program
             new { n = "anim2d", ok = anim2d.Count > 0 }, new { n = "models", ok = modelStep != 0 }, new { n = "particles", ok = pfxSite != 0 },
             new { n = "fades", ok = fades.Count > 0 || fx.Fades.Count > 0 }, new { n = "zoom", ok = zoomSite != 0 },
             new { n = "camsteps", ok = fx.CameraStep != 0 }, new { n = "fxframes", ok = fx.Frame5.Count > 0 }, new { n = "throb", ok = fx.Throb != 0 },
-            new { n = "shake", ok = fx.Shake != 0 }, new { n = "traillock", ok = trailLock != 0 }, new { n = "sway", ok = sway != null } };
+            new { n = "shake", ok = fx.Shake != 0 }, new { n = "traillock", ok = trailLock != 0 }, new { n = "sway", ok = sway != null }, new { n = "stream", ok = stream != 0 }, new { n = "fpsframes", ok = fpsFrames.Count > 0 }, new { n = "blinks", ok = blinks.Sites.Count > 0 }, new { n = "tint", ok = blinks.Tint.Count > 0 }, new { n = "modeltimer", ok = blinks.TimerUpdate != 0 }, new { n = "pulse", ok = pulse != null }, new { n = "turrets", ok = turretSite != null }, new { n = "topple", ok = topple != null }, new { n = "offscreenanim", ok = animGate != 0 } };
         found = "found: " + string.Join(" ", have.Where(h => h.ok).Select(h => h.n)) + " | missing: " + string.Join(" ", have.Where(h => !h.ok).Select(h => h.n));
 
         // +0 fps, +8 particle accum, +40 stubs
@@ -184,6 +193,13 @@ static class Program
         PatchCnc3Fx(proc, fx, fps, (uint)mem, (uint)mem + 0x10, (uint)mem + 0xD00, (uint)mem + 0xD40);
         if (On("traillock") && trailLock != 0) PatchTrailLock(proc, trailLock, (uint)mem + 0xE00);
         if (On("sway") && sway != null && fps > 30) PatchSway(proc, img, sway, (uint)mem, (uint)mem + 0xE40);
+        if (On("fpsframes") && fpsFrames.Count > 0 && fps > 30) Redirect(proc, fpsFrames, (uint)mem);
+        if (On("pulse") && pulse != null && fps > 30) PatchPulse(proc, pulse, (uint)mem, (uint)mem + 0xB20);
+        if (On("topple") && topple != null && fps > 30) PatchTopple(proc, topple, (uint)mem + 0xBA0);
+        if (On("offscreenanim") && offscreenAnim && animGate != 0 && fps > 30) Write(proc, animGate, new byte[] { 0xEB });   // jne -> jmp
+        if (On("turrets") && turretSite != null && sched && fps > 30) PatchTurretInterp(proc, img, turretSite, schedSite, (uint)mem + 0xB80, (uint)mem + 0xD48);
+        if ((blinks.Sites.Count > 0 || blinks.Tint.Count > 0 || blinks.TimerUpdate != 0) && fps > 30) PatchBlinks(proc, blinks, (uint)mem, (uint)mem + 0xB00);
+        if (On("stream") && stream != 0 && fps > 30) PatchStreamUpdate(proc, img, stream, (uint)mem, (uint)mem + 0xFA0);
         if (On("models") && modelStep != 0) Redirect(proc, new List<uint> { modelStep }, (uint)mem + 0x10);   // 1/fps instead of 1/30
         if (On("particles") && throttlePfx && pfxSite != 0)
             ThrottleParticles(proc, pfxSite, pfxSim, (uint)mem, (uint)mem + 8, (uint)mem + 0x40);
@@ -199,6 +215,15 @@ static class Program
             (held != null ? " | camerakeys " + hex(new[] { held.ZoomIn, held.ZoomOut, held.Rotate }) : "") +
             (trailLock != 0 ? " | traillock " + hex(new[] { trailLock }) : "") +
             (sway != null ? " | sway " + hex(new[] { sway.Guard }) : "") +
+            (stream != 0 ? " | stream " + hex(new[] { stream }) : "") +
+            (fpsFrames.Count > 0 ? " | fpsframes " + hex(fpsFrames) : "") +
+            (blinks.Sites.Count > 0 ? " | blinks " + hex(blinks.Sites) : "") +
+            (blinks.Tint.Count > 0 ? " | tint " + hex(blinks.Tint) : "") +
+            (blinks.TimerUpdate != 0 ? " | modeltimer " + hex(new[] { blinks.TimerInit, blinks.TimerUpdate }) : "") +
+            (pulse != null ? " | pulse " + hex(new[] { pulse.Call, pulse.Sine }) : "") +
+            (turretSite != null ? " | turrets " + hex(new[] { turretSite.Site }) : "") +
+            (topple != null ? " | topple " + hex(new[] { topple.Hook }) : "") +
+            (animGate != 0 ? " | offscreenanim " + hex(new[] { animGate }) : "") +
             " | fx " + hex(fx.Frame5.Concat(new[] { fx.TracerUpdate, fx.CameraStep, fx.LaserStep, fx.Throb, fx.Shake })) +
             (fx.Fades.Count > 0 ? " | cnc3 fades " + hex(fx.Fades.Concat(new[] { fx.PulseSet, fx.PulseUpdate })) : "");
         return sites;
@@ -1233,6 +1258,381 @@ static class Program
         Write(proc, stubVa, s.Done(0x40));
         var p = new List<byte> { 0xE8 }; p.AddRange(BitConverter.GetBytes(stubVa - (site + 5))); p.Add(0x90);
         Write(proc, site, p.ToArray());
+    }
+
+    // tw/kw: StreamDraw::Stream (flamethrower etc, #21). its update runs every drawn frame and adds a new point
+    // each time (points move by real time, frames / fps). the vertex buffer holds what a 30hz stream makes, so at
+    // 240 the mesh writer runs off the end of it and crashes. only the add is held to 30hz: the update still runs
+    // every frame, so the stream moves as smoothly as before with the same number of points as stock
+    const string StreamUpdatePattern = "8B F1 E8 ?? ?? ?? ?? 8B 46 50 89 46 4C 8B 0D ?? ?? ?? ?? 8B 01 FF 50 78 89 46 50 2B 46 4C";
+
+    static uint FindStreamUpdate(byte[] img)
+    {
+        uint m = FindUnique(img, StreamUpdatePattern);
+        if (m == 0) return 0;
+        // cmp byte [esi+55h],0 / je / mov ecx,esi / call add point
+        int o = (int)(m - ImageBase) + 0x39;
+        byte[] want = { 0x80, 0x7E, 0x55, 0x00, 0x74, 0x07, 0x8B, 0xCE, 0xE8 };
+        for (int i = 0; i < want.Length; i++) if (img[o + i] != want[i]) return 0;
+        return m + 0x39 + 8;
+    }
+
+    static void PatchStreamUpdate(IntPtr proc, byte[] img, uint site, uint fpsVa, uint stubVa)
+    {
+        // add a point only when the 30hz frame moved since the last update: [esi+4Ch] last frame, [esi+50h] now
+        var s = new Asm(stubVa);
+        s.E(0x51);                                                    // push ecx
+        s.E(0x8B, 0x46, 0x50, 0x6B, 0xC0, 0x1E, 0x33, 0xD2, 0xF7, 0x35); s.D(fpsVa);   // eax = now * 30 / fps
+        s.E(0x50);                                                    // push eax
+        s.E(0x8B, 0x46, 0x4C, 0x6B, 0xC0, 0x1E, 0x33, 0xD2, 0xF7, 0x35); s.D(fpsVa);   // eax = last * 30 / fps
+        s.E(0x5A, 0x59, 0x3B, 0xC2); s.J(0x75, "add");               // pop edx / pop ecx / cmp eax,edx / jne add
+        s.E(0xC3);
+        s.L("add"); s.Rel(0xE9, CallTarget(img, site));               // jmp add point
+        Write(proc, stubVa, s.Done(0x40));
+        Write(proc, site + 1, BitConverter.GetBytes(stubVa - (site + 5)));
+    }
+
+    // seconds turned into frames with the render fps setting (still 30, only the pacing reads get the real fps) and
+    // then counted with getFrame, which counts drawn frames: unit flash every fps/2 frames, radar event and marker
+    // lifetimes, a 10 s duplicate window, a 30 s repeat. those reads get the real fps so N seconds is N seconds again.
+    // only reads tied to getFrame: right after a getFrame call, or a global made from the fps whose one reader sits
+    // right after one. fades etc. that count with a 30hz clock keep 30 on purpose
+    static List<uint> FindFpsFrameReads(byte[] img, uint render, List<uint> pacing)
+    {
+        var list = new List<uint>();
+        if (render == 0) return list;
+        int end = TextEnd(img);
+        Func<int, uint> dw = o => BitConverter.ToUInt32(img, o);
+        // getFrame: mov ecx,[client] / mov r,[ecx] / call [r+78h] (c&c3), or mov r,[r+74h] / call r (ra3)
+        var count = new Dictionary<uint, int>();
+        for (int i = 0x1000; i < end - 16; i++)
+        {
+            if (img[i] != 0x8B || img[i + 1] != 0x0D) continue;
+            if (Slot(img, i + 6) == 0) continue;
+            uint g = dw(i + 2); int c; count.TryGetValue(g, out c); count[g] = c + 1;
+        }
+        if (count.Count == 0) return list;
+        uint client = count.OrderByDescending(kv => kv.Value).First().Key;
+        var callEnds = new HashSet<int>(); var callStarts = new HashSet<int>(); var spans = new List<int[]>();
+        for (int i = 0x1000; i < end - 16; i++)
+            if (img[i] == 0x8B && img[i + 1] == 0x0D && dw(i + 2) == client) { int e = Slot(img, i + 6); if (e != 0) { callEnds.Add(e); callStarts.Add(i); spans.Add(new[] { i, e }); } }
+        Func<int, bool> afterFrame = o => { for (int k = o - 40; k <= o; k++) if (callEnds.Contains(k)) return true; return false; };
+        // render reads: mov eax,[r] / mov r32,[r] / fild [r] / cmp r32,[r]. o = operand offset
+        Func<int, bool> isRead = o => img[o - 1] == 0xA1 || (img[o - 2] == 0x8B || img[o - 2] == 0xDB || img[o - 2] == 0x3B || img[o - 2] == 0xF7
+            || img[o - 3] == 0x0F && img[o - 2] == 0xAF) && (img[o - 1] & 0xC7) == 0x05;   // + mul/div/imul [fps]
+        var reads = new List<int>();
+        byte[] R = BitConverter.GetBytes(render);
+        for (int o = 0x1002; o < end - 4; o++)
+            if (img[o] == R[0] && img[o + 1] == R[1] && img[o + 2] == R[2] && img[o + 3] == R[3] && isRead(o)) reads.Add(o);
+        var pick = new HashSet<int>();
+        // the read and its sign-test partner a few bytes away (fild [fps] / mov eax,[fps] / test / jge / fadd 2^32)
+        Action<int> take = o => { foreach (int r in reads) if (Math.Abs(r - o) <= 12) pick.Add(r); };
+        foreach (int o in reads) if (afterFrame(o - (img[o - 1] == 0xA1 ? 1 : img[o - 3] == 0x0F ? 3 : 2))) take(o);
+        // mov r,[fps] right before the getFrame call, both used together after it (frame % (2 * fps) pulses)
+        foreach (int o in reads)
+            if (img[o - 2] == 0x8B && (spans.Any(sp => sp[0] < o && o < sp[1]) || Enumerable.Range(o + 4, 5).Any(callStarts.Contains))) take(o);
+        // frame budget timers: the constructor stores round(fps * seconds), the update (vtable slot 1) subtracts
+        // drawn frames from it. mov [esi],vtable / mov [esi+4],r / mov [esi+8],eax / fild [fps]
+        byte[] Rb = BitConverter.GetBytes(render);
+        foreach (uint m in FindAll(img, "C7 06 ?? ?? ?? ?? 89 ?? 04 89 46 08 DB 05 " + string.Join(" ", Rb.Select(x => x.ToString("X2")))))
+        {
+            int mo = (int)(m - ImageBase);
+            uint vt = dw(mo + 2);
+            if (vt < ImageBase || vt - ImageBase + 8 > img.Length) continue;
+            uint upd = dw((int)(vt - ImageBase) + 4);
+            if (upd < ImageBase + 0x1000 || upd >= ImageBase + (uint)end) continue;
+            int uo = (int)(upd - ImageBase);
+            bool frames = false;
+            for (int k = uo; k < uo + 0x30 && !frames; k++) frames = callEnds.Contains(k);
+            if (frames) take(mo + 14);
+        }
+        // globals built from the fps: writer mov [g],eax (A3) / mov [g],r32 (89 05..3D) with fps reads shortly before
+        var writers = new Dictionary<uint, List<int>>();
+        for (int i = 0x1000; i < end - 8; i++)
+        {
+            int o = img[i] == 0xA3 ? i + 1 : img[i] == 0x89 && (img[i + 1] & 0xC7) == 0x05 ? i + 2 : -1;
+            if (o < 0) continue;
+            uint g = dw(o);
+            if (g == render || g < ImageBase + (uint)end) continue;
+            List<int> w; if (!writers.TryGetValue(g, out w)) writers[g] = w = new List<int>(); w.Add(o);
+        }
+        foreach (var kv in writers)
+        {
+            // fps reads feeding this writer: up to 0xB0 back, not across a ret that starts another function
+            var feed = new List<int>();
+            foreach (int wo in kv.Value)
+                foreach (int r in reads)
+                    if (r < wo && r > wo - 0xB0)
+                    {
+                        bool cut = false;
+                        for (int k = r; k < wo - 1 && !cut; k++) cut = (img[k] == 0xC3 || img[k] == 0xCC) && (img[k + 1] == 0x51 || img[k + 1] == 0x55 || img[k + 1] == 0x56 || img[k + 1] == 0xCC);
+                        if (!cut) feed.Add(r);
+                    }
+            if (feed.Count == 0) continue;
+            // every other memory use of g: exactly one, div [g] / cmp r32,[g], right after a getFrame call
+            byte[] G = BitConverter.GetBytes(kv.Key);
+            var uses = new List<int>();
+            for (int o = 0x1002; o < end - 4; o++)
+                if (img[o] == G[0] && img[o + 1] == G[1] && img[o + 2] == G[2] && img[o + 3] == G[3] && !kv.Value.Contains(o) && (img[o - 1] & 0xC7) == 0x05 && ModRmOps.Contains(img[o - 2])) uses.Add(o);
+            if (uses.Count != 1) continue;
+            int u = uses[0];
+            bool divOrCmp = img[u - 2] == 0xF7 && (img[u - 1] == 0x35 || img[u - 1] == 0x3D) || img[u - 2] == 0x3B;
+            if (!divOrCmp || !afterFrame(u - 2)) continue;
+            foreach (int r in feed) pick.Add(r);
+        }
+        foreach (int o in pick.OrderBy(x => x))
+        {
+            uint va = ImageBase + (uint)o;
+            if (!pacing.Contains(va)) list.Add(va);
+        }
+        return list;
+    }
+
+    // opcodes that take a modrm byte (so 3D in cmp eax,imm32 isn't mistaken for one)
+    static readonly HashSet<byte> ModRmOps = new HashSet<byte> { 0x01, 0x03, 0x0B, 0x23, 0x29, 0x2B, 0x33, 0x39, 0x3B, 0x81, 0x83, 0x89, 0x8B, 0x8D, 0xC7, 0xD8, 0xD9, 0xDB, 0xDC, 0xDD, 0xF7, 0xFF };
+
+    // end of a getFrame call starting at i (after mov ecx,[client]): mov r,[ecx] then call [r+78h], or
+    // mov r,[r+74h] / call r. 0 if it isn't one
+    static int Slot(byte[] img, int i)
+    {
+        if (img[i] == 0x8B && img[i + 1] >= 0xC0 && (img[i + 2] != 0x8B || (img[i + 3] & 0xC7) == 0x01)) i += 2;   // mov r,r in between
+        if (img[i] != 0x8B || (img[i + 1] & 0xC7) != 0x01) return 0;          // mov r,[ecx]
+        int r = (img[i + 1] >> 3) & 7;
+        for (int k = i + 2; k < i + 12; k++)
+        {
+            if (img[k] == 0xFF && img[k + 1] == 0x50 + r && img[k + 2] == 0x78) return k + 3;            // call [r+78h]
+            if (img[k] == 0x8B && (img[k + 1] & 0xC7) == 0x40 + r && img[k + 2] == 0x74)                    // mov r2,[r+74h]
+            {
+                int r2 = (img[k + 1] >> 3) & 7;
+                for (int j = k + 3; j < k + 18; j++) if (img[j] == 0xFF && img[j + 1] == 0xD0 + r2) return j + 2;
+            }
+        }
+        return 0;
+    }
+
+    // blinks keyed off the low bits of getFrame (drawn frames): tw/kw radar blips (frame & 4, ~4 hz) and a marker
+    // drawn on odd frames (frame & 1) in all of them. at 240 they turn into a flicker / look solid, so those
+    // calls get a 30hz frame
+    class Blinks { public byte Slot; public int Len; public uint TimerInit, TimerUpdate; public List<uint> Sites = new List<uint>(), Tint = new List<uint>(); }
+
+    static Blinks FindBlinks(byte[] img)
+    {
+        var b = new Blinks();
+        // c&c3: mov ecx,[client] / mov eax,[ecx] / call [eax+78h] / test al,4 or 1
+        foreach (string t in new[] { "A8 04", "A8 01" })
+            foreach (uint m in FindAll(img, "8B 0D ?? ?? ?? ?? 8B 01 FF 50 78 " + t)) b.Sites.Add(m + 6);
+        // tw/kw tint envelope (color flash): set stores frame + attack/peak/decay frames (30 fps frames), install and
+        // play compare getFrame with them. all three get the 30hz frame or none
+        uint tset = FindUnique(img, "55 8B EC 56 8B F1 8B 0D ?? ?? ?? ?? 8B 01 FF 50 78 8B 4D 08 8B 55 0C 03 C8");
+        uint tins = FindUnique(img, "8B 0D ?? ?? ?? ?? 8B 01 FF 50 78 39 46 3C 76");
+        uint tply = FindUnique(img, "8B 0D ?? ?? ?? ?? 8B 01 FF 50 78 83 65 F0 00 8B D8");
+        if (tset != 0 && tins != 0 && tply != 0) b.Tint.AddRange(new[] { tset + 12, tins + 6, tply + 6 });
+        // tw/kw model timer: init stamps [esi+off] = getFrame, update adds getFrame - stamp to a progress capped at a
+        // duration in 30 fps frames. both get the 30hz frame (the init's add esp,10h sits inside the call)
+        uint tup = FindUnique(img, "8B 0D ?? ?? ?? ?? 8B 01 FF 50 78 8B D0 8D 8B ?? ?? 00 00 2B 11");
+        if (tup != 0)
+        {
+            ushort off = BitConverter.ToUInt16(img, (int)(tup - ImageBase) + 15);
+            string o = (off & 0xFF).ToString("X2") + " " + (off >> 8).ToString("X2");
+            uint tin = FindUnique(img, "8B 0D ?? ?? ?? ?? 8B 01 83 C4 10 FF 50 78 89 86 " + o + " 00 00");
+            if (tin != 0) { b.TimerInit = tin + 6; b.TimerUpdate = tup + 6; }
+        }
+        if (b.Sites.Count > 0 || b.Tint.Count > 0 || b.TimerUpdate != 0) { b.Slot = 0x78; b.Len = 5; return b; }
+        // ra3: mov ecx,[client] / mov edx,[ecx] / mov eax,[edx+74h] / call eax / test al,1
+        foreach (uint m in FindAll(img, "8B 0D ?? ?? ?? ?? 8B 11 8B 42 74 FF D0 A8 01")) b.Sites.Add(m + 6);
+        b.Slot = 0x74; b.Len = 7;
+        return b;
+    }
+
+    static void PatchBlinks(IntPtr proc, Blinks b, uint fpsVa, uint stubVa)
+    {
+        // eax = getFrame() * 30 / fps
+        var s = new Asm(stubVa);
+        s.E(0x8B, 0x01, 0xFF, 0x50, b.Slot, 0x6B, 0xC0, 0x1E, 0x33, 0xD2, 0xF7, 0x35); s.D(fpsVa); s.E(0xC3);
+        Write(proc, stubVa, s.Done(0x20));
+        foreach (uint site in On("blinks") ? b.Sites : new List<uint>())
+        {
+            var p = new List<byte> { 0xE8 }; p.AddRange(BitConverter.GetBytes(stubVa - (site + 5)));
+            while (p.Count < b.Len) p.Add(0x90);
+            Write(proc, site, p.ToArray());
+        }
+        if (On("modeltimer") && b.TimerUpdate != 0)
+        {
+            Write(proc, b.TimerUpdate, new byte[] { 0xE8 }.Concat(BitConverter.GetBytes(stubVa - (b.TimerUpdate + 5))).ToArray());
+            // mov eax,[ecx] / add esp,10h / call [eax+78h] -> add esp,10h / call stub
+            Write(proc, b.TimerInit, new byte[] { 0x83, 0xC4, 0x10, 0xE8 }.Concat(BitConverter.GetBytes(stubVa - (b.TimerInit + 8))).ToArray());
+        }
+        if (On("tint"))
+            foreach (uint site in b.Tint)
+            {
+                var p = new List<byte> { 0xE8 }; p.AddRange(BitConverter.GetBytes(stubVa - (site + 5)));
+                Write(proc, site, p.ToArray());
+            }
+    }
+
+    // ra3/uprising: a drawable pulse (sine on getFrame % period, two counters -1 per call) that the drawable update
+    // runs once per drawn frame. that call now only goes through on drawn frames that start a new 30hz frame
+    // (same answer for every drawable in a frame, no state needed), and the sine reads the 30hz frame.
+    // between those frames the pulse keeps its last value, as at 30 fps
+    class PulseSite { public uint Fn, Sine, Call, Client; }
+
+    static PulseSite FindPulse(byte[] img)
+    {
+        uint fn = FindUnique(img, "83 EC 08 56 8B F1 83 86 ?? ?? 00 00 FF 79 0A C7 86 ?? ?? 00 00 00 00 00 00 A1");
+        uint sine = FindUnique(img, "8B 0D ?? ?? ?? ?? D9 5C 24 0C 8B 11 8B 42 74 FF D0");
+        if (fn == 0 || sine == 0 || sine < fn || sine > fn + 0x100) return null;
+        int end = TextEnd(img);
+        var calls = new List<uint>();
+        for (int i = 0x1000; i < end - 5; i++)
+        {
+            if (img[i] != 0xE8 || CallTarget(img, ImageBase + (uint)i) != fn) continue;
+            // the drawable update: the flash's div [fps/2] a little before
+            bool flash = false;
+            for (int k = i - 0x100; k < i && !flash; k++) flash = img[k] == 0xF7 && img[k + 1] == 0x35;
+            if (flash) calls.Add(ImageBase + (uint)i);
+        }
+        if (calls.Count != 1) return null;
+        return new PulseSite { Fn = fn, Sine = sine + 10, Call = calls[0], Client = BitConverter.ToUInt32(img, (int)(sine - ImageBase) + 2) };
+    }
+
+    static void PatchPulse(IntPtr proc, PulseSite p, uint fpsVa, uint stubVa)
+    {
+        uint frameStub = stubVa + 0x40;
+        // eax = getFrame() * 30 / fps (ecx = client)
+        var f = new Asm(frameStub);
+        f.E(0x8B, 0x01, 0xFF, 0x50, 0x74, 0x6B, 0xC0, 0x1E, 0x33, 0xD2, 0xF7, 0x35); f.D(fpsVa); f.E(0xC3);
+        Write(proc, frameStub, f.Done(0x20));
+        // gate: run the pulse only if f(now) != f(now - 1)
+        var g = new Asm(stubVa);
+        g.E(0x51, 0x8B, 0x0D); g.D(p.Client);                       // push ecx / mov ecx,[client]
+        g.E(0x8B, 0x01, 0xFF, 0x50, 0x74, 0x8B, 0xC8);              // mov eax,[ecx] / call [eax+74h] / mov ecx,eax
+        g.E(0x6B, 0xC0, 0x1E, 0x33, 0xD2, 0xF7, 0x35); g.D(fpsVa);  // eax = now * 30 / fps
+        g.E(0x50, 0x8D, 0x41, 0xFF);                                 // push eax / lea eax,[ecx-1]
+        g.E(0x6B, 0xC0, 0x1E, 0x33, 0xD2, 0xF7, 0x35); g.D(fpsVa);  // eax = (now - 1) * 30 / fps
+        g.E(0x5A, 0x59, 0x3B, 0xC2); g.J(0x75, "run");               // pop edx / pop ecx / cmp / jne run
+        g.E(0xC3);
+        g.L("run"); g.Rel(0xE9, p.Fn);
+        Write(proc, stubVa, g.Done(0x40));
+        Write(proc, p.Call + 1, BitConverter.GetBytes(stubVa - (p.Call + 5)));
+        // mov edx,[ecx] / mov eax,[edx+74h] / call eax -> call frameStub / nop / nop
+        Write(proc, p.Sine, new byte[] { 0xE8 }.Concat(BitConverter.GetBytes(frameStub - (p.Sine + 5))).Concat(new byte[] { 0x90, 0x90 }).ToArray());
+    }
+
+    // tw/kw turret bones: the draw code keeps prev/next turret angle and blends them with the engine interp, moving
+    // next -> prev on frames where interp is exactly 1.0. the time-based scheduler holds interp at 1.0 for a few
+    // frames after the last phase, so the turret shifts several times, snaps to the newest angle and then sits still
+    // for the rest of the tick (looks like 15 fps). the turret code now gets its own value: 1.0 on the first drawn
+    // frame of each 1.0 run (one shift per tick), after that the real time since then / tick length (< 1)
+    // ra3/uprising: same turret code (interp at [engine+60h], also shifts when interp equals a saved value), the load
+    // sits between test ebp,ebp and its je, so that stub keeps the flags and eax
+    class TurretSite { public uint Site, Engine; public int Len; public byte Off, Slot; public bool Keep; }
+
+    static TurretSite FindTurretInterp(byte[] img)
+    {
+        // tw/kw: mov eax,[engine] / movss xmm0,[eax+48h] / mov eax,[edi+0Ch] / mov ebx,[eax+140h]
+        uint m = FindUnique(img, "A1 ?? ?? ?? ?? F3 0F 10 40 48 8B 47 0C 8B 98 40 01 00 00");
+        if (m != 0) return new TurretSite { Site = m, Engine = BitConverter.ToUInt32(img, (int)(m - ImageBase) + 1), Len = 10, Off = 0x48, Slot = 0x78 };
+        // ra3: mov eax,[engine] / mov ebp,[ecx+138h] / test ebp,ebp / movss xmm0,[eax+60h] / movss [esp+x],xmm0 / je
+        m = FindUnique(img, "A1 ?? ?? ?? ?? 8B A9 38 01 00 00 85 ED F3 0F 10 40 60 F3 0F 11 44 24 ?? 74");
+        if (m != 0) return new TurretSite { Site = m + 13, Engine = BitConverter.ToUInt32(img, (int)(m - ImageBase) + 1), Len = 5, Off = 0x60, Slot = 0x74, Keep = true };
+        return null;
+    }
+
+    // the client global: the one most getFrame calls go through
+    static uint FindClient(byte[] img)
+    {
+        var count = new Dictionary<uint, int>();
+        int end = TextEnd(img);
+        for (int i = 0x1000; i < end - 24; i++)
+        {
+            if (img[i] != 0x8B || img[i + 1] != 0x0D || Slot(img, i + 6) == 0) continue;
+            uint g = BitConverter.ToUInt32(img, i + 2); int c;
+            count.TryGetValue(g, out c); count[g] = c + 1;
+        }
+        return count.Count == 0 ? 0 : count.OrderByDescending(kv => kv.Value).First().Key;
+    }
+
+    static void PatchTurretInterp(IntPtr proc, byte[] img, TurretSite t, SchedSite sched, uint data, uint stubVa)
+    {
+        uint site = t.Site, engine = t.Engine, client = FindClient(img);
+        if (client == 0) return;
+        uint gFrame = data, gInOne = data + 4, gShift = data + 5, gTime = data + 8, one = data + 0x10, almost = data + 0x14, tickMs = data + 0x18;
+        Write(proc, one, BitConverter.GetBytes(1f));
+        Write(proc, almost, BitConverter.GetBytes(0.9999f));
+        Write(proc, tickMs, BitConverter.GetBytes(sched.Tick / 3f));      // tick is in 1/3 ms
+        Write(proc, gFrame, BitConverter.GetBytes(uint.MaxValue));
+        var a = new Asm(stubVa);
+        if (t.Keep) a.E(0x9C, 0x50);                                        // pushfd / push eax
+        a.E(0x51, 0x52, 0x8B, 0x0D); a.D(client);                          // push ecx / push edx / mov ecx,[client]
+        a.E(0x8B, 0x01, 0xFF, 0x50, t.Slot);                                // eax = getFrame()
+        a.E(0x3B, 0x05); a.D(gFrame); a.J(0x74, "done");                    // decided this frame already
+        a.E(0xA3); a.D(gFrame);
+        a.E(0xA1); a.D(engine); a.E(0xF3, 0x0F, 0x10, 0x40, t.Off);         // xmm0 = interp
+        a.E(0x0F, 0x2E, 0x05); a.D(one); a.J(0x7A, "notone"); a.J(0x75, "notone");   // ucomiss xmm0,[1.0]
+        a.E(0x80, 0x3D); a.D(gInOne); a.E(0x00); a.J(0x75, "noshift");      // already in this 1.0 run
+        a.E(0xC6, 0x05); a.D(gInOne); a.E(0x01);
+        a.E(0xC6, 0x05); a.D(gShift); a.E(0x01);
+        a.Rel(0xE8, sched.TimeFn); a.E(0xA3); a.D(gTime);                  // completion time (ms)
+        a.J(0xEB, "done");
+        a.L("notone"); a.E(0xC6, 0x05); a.D(gInOne); a.E(0x00);
+        a.L("noshift"); a.E(0xC6, 0x05); a.D(gShift); a.E(0x00);
+        a.L("done");
+        a.E(0x80, 0x3D); a.D(gShift); a.E(0x00); a.J(0x74, "frac");
+        a.E(0xF3, 0x0F, 0x10, 0x05); a.D(one); a.J(0xEB, "out");           // movss xmm0,[1.0]
+        a.L("frac");
+        a.Rel(0xE8, sched.TimeFn); a.E(0x2B, 0x05); a.D(gTime);            // eax = ms since completion
+        a.E(0xF3, 0x0F, 0x2A, 0xC0);                                        // cvtsi2ss xmm0,eax
+        a.E(0xF3, 0x0F, 0x5E, 0x05); a.D(tickMs);                           // divss
+        a.E(0xF3, 0x0F, 0x5D, 0x05); a.D(almost);                           // minss
+        a.L("out"); a.E(0x5A, 0x59);                                        // pop edx / pop ecx
+        if (t.Keep) a.E(0x58, 0x9D);                                        // pop eax / popfd
+        a.E(0xC3);
+        Write(proc, stubVa, a.Done(0xB8));
+        Write(proc, site, new byte[] { 0xE8 }.Concat(BitConverter.GetBytes(stubVa - (site + 5))).Concat(Enumerable.Repeat((byte)0x90, t.Len - 5)).ToArray());
+    }
+
+    // ra3/uprising (#14): knocked over lamp posts etc. ToppleUpdate turns the object once per logic tick, but static
+    // map objects have a template flag that copies into drawable+13Eh bit 4 = "don't blend between ticks", so the fall
+    // shows at the logic rate. while something is toppling that bit gets cleared and the normal blend takes over
+    class ToppleSite { public uint Hook; public int DrawOff, FlagOff; }
+
+    static ToppleSite FindTopple(byte[] img)
+    {
+        // ToppleUpdate::update: state checks, then cmp [edi+38h],0 / push ebx / mov ebx,[edi-8] (the object)
+        uint h = FindUnique(img, "83 EC 4C 57 8B F9 8B 47 2C 85 C0 0F 84 ?? ?? ?? ?? 83 F8 02 0F 84 ?? ?? ?? ?? 83 7F 38 00 53 8B 5F F8");
+        // where the template flags are copied into the drawable: gives the flag byte and object->drawable offsets
+        uint f = FindUnique(img, "C1 E9 04 02 C9 02 C9 32 8F ?? ?? 00 00 6A 3C 80 E1 04 30 8F ?? ?? 00 00 8B 56 04 8B 8A ?? ?? 00 00 8B 86 ?? ?? 00 00");
+        if (h == 0 || f == 0) return null;
+        int o = (int)(f - ImageBase);
+        return new ToppleSite { Hook = h + 26, FlagOff = BitConverter.ToInt32(img, o + 9), DrawOff = BitConverter.ToInt32(img, o + 35) };
+    }
+
+    static void PatchTopple(IntPtr proc, ToppleSite t, uint stubVa)
+    {
+        var a = new Asm(stubVa);
+        a.E(0x50, 0x8B, 0x47, 0xF8, 0x85, 0xC0); a.J(0x74, "skip");          // push eax / mov eax,[edi-8] / test / jz
+        a.E(0x8B, 0x80); a.D((uint)t.DrawOff); a.E(0x85, 0xC0); a.J(0x74, "skip");   // mov eax,[eax+draw] / test / jz
+        a.E(0x80, 0xA0); a.D((uint)t.FlagOff); a.E(0xFB);                     // and byte [eax+flag],0FBh
+        a.L("skip"); a.E(0x58);                                               // pop eax
+        a.E(0x83, 0x7F, 0x38, 0x00, 0x53);                                    // original: cmp dword [edi+38h],0 / push ebx
+        a.Rel(0xE9, t.Hook + 5);
+        Write(proc, stubVa, a.Done(0x40));
+        Write(proc, t.Hook, new byte[] { 0xE9 }.Concat(BitConverter.GetBytes(stubVa - (t.Hook + 5))).ToArray());
+    }
+
+    // #13: the model draw update starts with "if not marked to animate this frame and it has an animation, return".
+    // the mark comes from the animation LOD controller, which only runs for models on screen and near enough to the
+    // camera, so off-screen (shadow still visible) and far models animate at the logic rate. the jne that skips the
+    // second test becomes jmp: every model updates every frame (costs some cpu). tested 2026-10-05: an off-screen air
+    // unit's shadow still moves choppy, so the shadow position comes from somewhere else. off unless offscreenanim=1
+    static uint FindAnimGate(byte[] img)
+    {
+        // tw/kw: mov ebx,ecx / cmp byte [ebx+A8h],0 / jne / cmp dword [ebx+ACh],0 / jne skip
+        uint m = FindUnique(img, "8B D9 80 BB ?? ?? 00 00 00 75 0D 83 BB ?? ?? 00 00 00 0F 85");
+        if (m != 0) return m + 9;
+        // ra3: cmp byte [esi+CCh],0 / push edi / mov edi,[esi+4] / mov [esp+0Ch],edi / jne / cmp dword [esi+D0h],0 / jne skip
+        m = FindUnique(img, "80 BE ?? ?? 00 00 00 57 8B 7E 04 89 7C 24 0C 75 ?? 83 BE ?? ?? 00 00 00 0F 85");
+        return m != 0 ? m + 15 : 0;
     }
 
     // ra3/uprising: vehicle and boat sway (#12). calcPhysicsXform steps a spring (pitch/roll, boat wobble) once per
