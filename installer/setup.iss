@@ -167,18 +167,34 @@ begin
   end;
 end;
 
-{ bfme2: no SkuDefs, the launcher (lotrbfme2.exe, rotwk lotrbfme2ep1.exe) starts game.dat }
+{ bfme2: no SkuDefs, the launcher (lotrbfme2.exe, rotwk lotrbfme2ep1.exe) starts game.dat. the BFME All In One
+  Launcher puts the whole game in place of the launcher exe (and there may be no game.dat), so a big launcher is the game }
+function IsBigExe(path: String): Boolean;
+var sz: Integer;
+begin
+  Result := FileExists(path) and FileSize(path, sz) and (sz > 4000000);
+end;
+
+function Bfme2GameExe(dir: String): String;
+begin
+  dir := AddBackslash(dir);
+  if FileExists(dir + 'game.dat') then Result := dir + 'game.dat'
+  else if IsBigExe(dir + 'lotrbfme2ep1.exe') then Result := dir + 'lotrbfme2ep1.exe'
+  else if IsBigExe(dir + 'lotrbfme2.exe') then Result := dir + 'lotrbfme2.exe'
+  else Result := '';
+end;
+
 function IsBfme2Folder(dir: String): Boolean;
 begin
-  Result := (dir <> '') and FileExists(AddBackslash(dir) + 'game.dat')
-    and (FileExists(AddBackslash(dir) + 'lotrbfme2.exe') or FileExists(AddBackslash(dir) + 'lotrbfme2ep1.exe'));
+  Result := (dir <> '') and (FileExists(AddBackslash(dir) + 'lotrbfme2.exe') or FileExists(AddBackslash(dir) + 'lotrbfme2ep1.exe'))
+    and (Bfme2GameExe(dir) <> '');
 end;
 
 function ExePath(game: String): String;
 var lines: TArrayOfString; i: Integer; sku: String;
 begin
   Result := '';
-  if IsBfme2Folder(game) then begin Result := AddBackslash(game) + 'game.dat'; exit; end;
+  if IsBfme2Folder(game) then begin Result := Bfme2GameExe(game); exit; end;
   sku := LatestSkuDef(game);
   if (sku = '') or not LoadStringsFromFile(sku, lines) then exit;
   for i := 0 to GetArrayLength(lines) - 1 do
@@ -319,10 +335,10 @@ procedure AddFolderClick(Sender: TObject);
 var dir: String;
 begin
   dir := '';
-  if not BrowseForFolder('Pick the game''s install folder (the one with the .SkuDef files, e.g. ...\Red Alert 3, or the BFME2 folder with game.dat)', dir, False) then exit;
+  if not BrowseForFolder('Pick the game''s install folder (the one with the .SkuDef files, e.g. ...\Red Alert 3, or the BFME2 / RotWK folder)', dir, False) then exit;
   if not IsGameFolder(dir) then
   begin
-    MsgBox('That doesn''t look like a supported game folder (no .SkuDef files, or game.dat for BFME2).', mbError, MB_OK);
+    MsgBox('That doesn''t look like a supported game folder (no .SkuDef files, or not a BFME2 / RotWK folder).', mbError, MB_OK);
     exit;
   end;
   if Known(dir) then exit;
