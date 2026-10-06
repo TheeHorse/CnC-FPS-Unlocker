@@ -1361,9 +1361,14 @@ static class Program
     // it gets set to 1000/30 at runtime, which put animations, water etc back on 30 fps time (8x fast at 240)
     const string BfmeFrameMsSetterPattern = "F3 0F 2C 44 24 04 A3 ?? ?? ?? ?? C2 04 00";
     // W3DView::scrollBy (SCROLL_RESOLUTION 250), same fix as c&c3: scale the step through its vtable slot
+    // the spell store (power purchase screen) only takes clicks when its extern "AptSpellStore::InputEnabled" says 1:
+    // game mode 6, or the in-game UI's flag byte +16h. above 30 fps that flag is off when the click arrives, so buying
+    // powers does nothing (other unlockers have the same bug). getter: ... cmp [logic+110h],6 / je yes / cmp [ui+16h],0 ...
+    // -> make the je a jmp, the store always takes input (it can only be opened by the player anyway)
+    const string BfmeSpellStorePattern = "33 C0 39 44 24 04 75 ?? 38 44 24 0C 75 ?? 8B 0D ?? ?? ?? ?? 83 B9 ?? ?? 00 00 06 74 ?? 8B 0D ?? ?? ?? ?? 38 41 ?? B8 ?? ?? ?? ?? 74 ?? B8";
     const string BfmeScrollByPattern = "55 8B EC 83 EC 64 A1 ?? ?? ?? ?? 80 B8 C0 00 00 00 00 53 8B D9 74 06 80 7B 44 00 75 09 80 BB 01 25 00 00 00 74 07 33 C0 E9";
 
-    class BfmeSites { public uint Render, Logic, Limiter, TimeIat, FrameMs, FrameMsSetter, ScrollFunc, ScrollSlot; public List<uint> Fps = new List<uint>(); public SchedSite Sched;
+    class BfmeSites { public uint Render, Logic, Limiter, TimeIat, FrameMs, FrameMsSetter, ScrollFunc, ScrollSlot, SpellStore, StoreJmp, StoreUpdate; public List<uint> Fps = new List<uint>(); public SchedSite Sched;
         public List<Tuple<uint, byte[]>> Restore = new List<Tuple<uint, byte[]>>(); }
 
     static BfmeSites FindBfme(byte[] img)
@@ -1401,6 +1406,36 @@ static class Program
         b.Limiter = lim + 6; b.TimeIat = BitConverter.ToUInt32(img, (int)(lim + 2 - ImageBase));
         uint set = FindUnique(img, BfmeFrameMsSetterPattern);
         if (set != 0 && BitConverter.ToUInt32(img, (int)(set - ImageBase) + 7) == b.FrameMs) b.FrameMsSetter = set;
+        // the spell store's per-frame update (sends SetSpellButtonState to the flash movie, but only when a button's
+        // state changed). wrapper: mov ecx,[store] / test ecx,ecx / je ret / jmp update / ret. found as the one whose
+        // update calls the function that uses the "SetSpellButtonState" string
+        int sbo = IndexOf(img, Encoding.ASCII.GetBytes("SetSpellButtonState\0"));
+        if (sbo > 0)
+        {
+            byte[] sb = BitConverter.GetBytes(ImageBase + (uint)sbo);
+            var sbRefs = new List<int>();
+            for (int i = 0x1000; i < end - 4; i++) if (at(i, sb)) sbRefs.Add(i);
+            var hitsW = new List<int>();
+            for (int i = 0x1000; i < end - 16; i++)
+            {
+                if (img[i] != 0x8B || img[i + 1] != 0x0D || img[i + 6] != 0x85 || img[i + 7] != 0xC9 || img[i + 8] != 0x74 || img[i + 9] != 0x05 || img[i + 10] != 0xE9 || img[i + 15] != 0xC3) continue;
+                long t = i + 15L + BitConverter.ToInt32(img, i + 11);
+                if (t < 0x1000 || t > end - 0x500) continue;
+                for (int k = (int)t; k < t + 0x500; k++)
+                {
+                    if (img[k] != 0xE8) continue;
+                    long ft = k + 5L + BitConverter.ToInt32(img, k + 1);
+                    if (sbRefs.Any(r => r >= ft && r < ft + 0x80)) { hitsW.Add(i); break; }
+                }
+            }
+            if (hitsW.Count == 1)
+            {
+                b.StoreJmp = ImageBase + (uint)hitsW[0] + 10;
+                b.StoreUpdate = ImageBase + (uint)(hitsW[0] + 15 + BitConverter.ToInt32(img, hitsW[0] + 11));
+            }
+        }
+        uint store = FindUnique(img, BfmeSpellStorePattern);
+        if (store != 0 && img[(int)(store - ImageBase) + 0x1B] == 0x74) b.SpellStore = store + 0x1B;
         b.ScrollFunc = FindUnique(img, BfmeScrollByPattern);
         if (b.ScrollFunc != 0)
             for (int o = TextEnd(img) & ~3; o + 4 <= img.Length; o += 4)
@@ -1429,8 +1464,8 @@ static class Program
     static void ApplyPatchesBfme(IntPtr proc, byte[] img, int fps, BfmeSites b)
     {
         bool sched = b.Sched != null && On("sched");
-        found = "found: fps limiter" + (b.Sched != null ? " sched" : "") + (b.FrameMsSetter != 0 ? " animclock" : "") + (b.ScrollSlot != 0 ? " scroll" : "") +
-                " | missing:" + (b.Sched == null ? " sched" : "") + (b.FrameMsSetter == 0 ? " animclock" : "") + (b.ScrollSlot == 0 ? " scroll" : "");
+        found = "found: fps limiter" + (b.Sched != null ? " sched" : "") + (b.FrameMsSetter != 0 ? " animclock" : "") + (b.ScrollSlot != 0 ? " scroll" : "") + (b.SpellStore != 0 ? " spellstore" : "") +
+                " | missing:" + (b.Sched == null ? " sched" : "") + (b.FrameMsSetter == 0 ? " animclock" : "") + (b.ScrollSlot == 0 ? " scroll" : "") + (b.SpellStore == 0 ? " spellstore" : "");
         IntPtr mem = Alloc(proc, 4096);
         if (mem == IntPtr.Zero) throw new Exception("couldn't allocate patch memory");
         uint m = (uint)mem;
@@ -1456,6 +1491,28 @@ static class Program
             var p = new List<byte> { 0xE9 }; p.AddRange(BitConverter.GetBytes(m + 0x320 - (b.FrameMsSetter + 5)));
             Write(proc, b.FrameMsSetter, p.ToArray());
         }
+        if (b.SpellStore != 0 && On("spellstore") && fps > 30) Write(proc, b.SpellStore, new byte[] { 0xEB });
+        // spell store update at most every 33 ms, like stock 30 fps: at 240 the next update came ~4 ms after SetLayout,
+        // before the flash movie stepped and built its buttons, so the button states went nowhere and (cached as sent)
+        // were never sent again: no buyable buttons. jmp update -> throttle stub
+        if (b.StoreJmp != 0 && On("spellstore") && fps > 30)
+        {
+            uint stub = m + 0xE00, last = m + 0xE80;
+            var a = new Asm(stub);
+            a.E(0x51);                                   // push ecx (the store)
+            a.E(0xFF, 0x15); a.D(b.TimeIat);             // call [timeGetTime]
+            a.E(0x8B, 0xD0);                             // mov edx,eax
+            a.E(0x2B, 0x05); a.D(last);                  // sub eax,[last]
+            a.E(0x83, 0xF8, 0x21); a.J(0x72, "skip");    // cmp eax,33 / jb skip
+            a.E(0x89, 0x15); a.D(last);                  // mov [last],edx
+            a.E(0x59);                                   // pop ecx
+            a.Rel(0xE9, b.StoreUpdate);                  // jmp update
+            a.L("skip");
+            a.E(0x59, 0xC3);                             // pop ecx / ret
+            Write(proc, stub, a.Done(0x40));
+            var p = new List<byte> { 0xE9 }; p.AddRange(BitConverter.GetBytes(stub - (b.StoreJmp + 5)));
+            Write(proc, b.StoreJmp, p.ToArray());
+        }
         if (b.ScrollSlot != 0 && On("scroll") && fps > 30) PatchScrollBy(proc, b.ScrollSlot, b.ScrollFunc, fps, m + 0x4F0, m + 0x4F8, m + 0x3C0);
         if (sched)
         {
@@ -1467,9 +1524,20 @@ static class Program
         }
         FlushCode(proc);
         Func<IEnumerable<uint>, string> hex = l => string.Join(" ", l.Where(a => a != 0).Select(a => "0x" + a.ToString("X")));
-        patched = "patch memory 0x" + m.ToString("X") + "-0x" + (m + 0xFFF).ToString("X") + "\r\nsites: fps " + hex(b.Fps) + " | limiter " + hex(new[] { b.Limiter }) + " | animclock " + hex(new[] { b.FrameMsSetter }) + " | scroll " + hex(new[] { b.ScrollSlot }) +
+        patched = "patch memory 0x" + m.ToString("X") + "-0x" + (m + 0xFFF).ToString("X") + "\r\nsites: fps " + hex(b.Fps) + " | limiter " + hex(new[] { b.Limiter }) + " | animclock " + hex(new[] { b.FrameMsSetter }) + " | scroll " + hex(new[] { b.ScrollSlot }) + " | spellstore " + hex(new[] { b.SpellStore, b.StoreJmp }) +
             (b.Sched != null ? " | sched " + hex(new[] { b.Sched.Advance, b.Sched.Exit }) + string.Format(" phase {0:X} interp {1:X} dispatch {2:X}", b.Sched.Phase, b.Sched.Interp, b.Sched.Dispatch) : "") +
             (b.Restore.Count > 0 ? " | restored stock code " + hex(b.Restore.Select(r => r.Item1)) : "");
+    }
+
+    static int IndexOf(byte[] img, byte[] what)
+    {
+        for (int i = 0; i + what.Length <= img.Length; i++)
+        {
+            int k = 0;
+            while (k < what.Length && img[i + k] == what[k]) k++;
+            if (k == what.Length) return i;
+        }
+        return -1;
     }
 
     // end of .text (img is mapped, see MapImage)

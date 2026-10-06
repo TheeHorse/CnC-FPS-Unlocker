@@ -192,8 +192,15 @@ static int is_game_process(void)
 {
     WCHAR exe[MAX_PATH];
     int n = GetModuleFileNameW(0, exe, MAX_PATH);
-    /* RA3_1.xx.game, cnc3game.dat, cnc3ep1.dat */
-    return n > 5 && (lstrcmpiW(exe + n - 5, L".game") == 0 || lstrcmpiW(exe + n - 4, L".dat") == 0);
+    WCHAR *name = exe + n;
+    WIN32_FILE_ATTRIBUTE_DATA fa;
+    /* RA3_1.xx.game, cnc3game.dat, cnc3ep1.dat, bfme game.dat */
+    if (n > 5 && (lstrcmpiW(exe + n - 5, L".game") == 0 || lstrcmpiW(exe + n - 4, L".dat") == 0)) return 1;
+    /* the BFME All In One Launcher puts the whole game in place of lotrbfme2.exe / lotrbfme2ep1.exe (normally a
+       ~500 KB launcher that starts game.dat). only the big one is the game */
+    while (name > exe && name[-1] != L'\\') name--;
+    if (CompareStringW(LOCALE_INVARIANT, NORM_IGNORECASE, name, 8, L"lotrbfme", 8) != CSTR_EQUAL) return 0;
+    return GetFileAttributesExW(exe, GetFileExInfoStandard, &fa) && (fa.nFileSizeHigh || fa.nFileSizeLow > 4000000);
 }
 
 BOOL WINAPI DllMain(HINSTANCE inst, DWORD reason, LPVOID reserved)
