@@ -22,73 +22,30 @@ static class Program
     internal static int InProcess(string dir)
     {
         int r = Patch(IntPtr.Zero, Process.GetCurrentProcess().MainModule.FileName, dir, "drop-in DLL");
-        if (r == 1 && syncMem != 0) new Thread(() => SyncLog(dir)) { IsBackground = true }.Start();
+        if (r == 1 && ReadIni(Path.Combine(dir, "RA3HighFps.ini"), "crcdump") == "1") new Thread(() => CrcDump(dir)) { IsBackground = true }.Start();
         return r;
     }
 
-    // sync log (test build): counters bumped by scheduler stub A. frames drawn +FE0, frames a tick was held back by the network +FE4, ticks that ran +FE8.
-    // writes a line for every bad second (fps well under target, logic under 15 ticks/s, network holding ticks back, a gap
-    // between ticks over 150 ms) and a summary every minute, so a slow/out of sync game can be matched to who was behind
-    static uint syncMem; static int syncFps, syncHz = 15;
     static uint realClockFn;   // set by PatchScheduler when the effects real clock is on
     static bool realclockOpt;
-    static void SyncLog(string dir)
+
+    // crcdump=1 (ra3 1.12, desync hunting): the game's own deep CRC switch. if the game goes out of sync it then writes
+    // DESYNC-Frame*.txt with everything that went into the last CRCs, so two players' files show what differed. the
+    // flags are set from here, not at patch time, so the game's startup can't clear them again
+    static void CrcDump(string dir)
     {
         try
         {
-            Func<uint, int> rd = o => Marshal.ReadInt32((IntPtr)(syncMem + o));
-            AppendLog(dir, "sync log on: a line per bad second (fps < " + (syncFps * 8 / 10) + ", ticks < " + (syncHz - 1) + ", waiting on network, gap > " + (2250 / syncHz) + " ms) + a summary per minute\r\n");
-            var sw = Stopwatch.StartNew();
-            int f0 = rd(0xFE0), h0 = rd(0xFE4), t0 = rd(0xFE8), lastT = t0, lines = 0;
-            double sec = 0, lastTick = 0, gapMax = 0;
-            int mFrames = 0, mTicks = 0, mHeld = 0, mStalls = 0, mFpsMin = int.MaxValue, mSecs = 0; double mGap = 0;
-            // crcdump=1 (ra3 1.12, desync hunting): the game's own deep CRC switch. online it then writes everything that goes
-            // into each CRC to a file named after the logic frame (every 45 frames), so two players' files at the frame the
-            // CRCs differed show what differed. set from here, not at patch time, so the game's startup can't clear it again
-            bool dump = ReadIni(Path.Combine(dir, "RA3HighFps.ini"), "crcdump") == "1" && CrcDumpSiteOk() && CrcDumpKeepLite();
-            var dumpStart = DateTime.Now.AddMinutes(-1);
-            if (dump) AppendLog(dir, "crc dump on: if the game goes out of sync it writes DESYNC-Frame*.txt (everything in the CRC at that frame) next to the game exe\r\n");
-            while (lines < 20000)
+            if (!CrcDumpSiteOk() || !CrcDumpKeepLite()) return;
+            AppendLog(dir, "crc dump on: if the game goes out of sync it writes DESYNC-Frame*.txt (everything in the CRC at that frame) next to the game exe\r\n");
+            while (true)
             {
-                Thread.Sleep(5);
-                double now = sw.Elapsed.TotalSeconds;
-                int t = rd(0xFE8);
-                if (t != lastT)
-                {
-                    double g = (now - lastTick) * 1000;
-                    if (lastTick > 0 && g > gapMax) gapMax = g;
-                    if (lastTick > 0 && g > 2250 / syncHz) mStalls++;
-                    lastTick = now; lastT = t;
-                }
-                if (now - sec < 1) continue;
-                double span = now - sec; sec = now;
-                if (dump)
-                {
-                    if (Marshal.ReadByte((IntPtr)CrcDumpFlag) == 0) Marshal.WriteByte((IntPtr)CrcDumpFlag, 1);
-                    if (Marshal.ReadByte((IntPtr)CrcLiteFlag) != 0) Marshal.WriteByte((IntPtr)CrcLiteFlag, 0);   // every object, not 1 in 10
-                    if ((int)now % 10 == 0) PruneCrcDumps(dumpStart);
-                }
-                int f = rd(0xFE0), h = rd(0xFE4);
-                int fps = (int)Math.Round((f - f0) / span), ticks = t - t0, held = h - h0;
-                f0 = f; h0 = h; t0 = t;
-                if (ticks == 0 && held == 0) { gapMax = 0; lastTick = 0; continue; }   // paused, loading or game over
-                mFrames += fps; mTicks += ticks; mHeld += held; mSecs++; mFpsMin = Math.Min(mFpsMin, fps); mGap = Math.Max(mGap, gapMax);
-                if (fps < syncFps * 8 / 10 || ticks < syncHz - 1 || held > 0 || gapMax > 2250 / syncHz)
-                {
-                    AppendLog(dir, DateTime.Now.ToString("HH:mm:ss") + "  fps " + fps + "  ticks " + ticks + "/" + syncHz + "  waiting on network " + held + " frames  longest gap " + (int)gapMax + " ms\r\n");
-                    lines++;
-                }
-                gapMax = 0;
-                if (mSecs >= 60)
-                {
-                    AppendLog(dir, DateTime.Now.ToString("HH:mm:ss") + "  last minute: fps avg " + (mFrames / mSecs) + " min " + mFpsMin + ", ticks " +
-                        (mTicks / (double)mSecs).ToString("F2", System.Globalization.CultureInfo.InvariantCulture) + "/s, frames waiting on network " + mHeld +
-                        ", stalls over " + (2250 / syncHz) + " ms " + mStalls + ", longest gap " + (int)mGap + " ms\r\n");
-                    lines++; mFrames = mTicks = mHeld = mStalls = mSecs = 0; mFpsMin = int.MaxValue; mGap = 0;
-                }
+                if (Marshal.ReadByte((IntPtr)CrcDumpFlag) == 0) Marshal.WriteByte((IntPtr)CrcDumpFlag, 1);
+                if (Marshal.ReadByte((IntPtr)CrcLiteFlag) != 0) Marshal.WriteByte((IntPtr)CrcLiteFlag, 0);   // every object, not 1 in 10
+                Thread.Sleep(1000);
             }
         }
-        catch (Exception e) { AppendLog(dir, "sync log stopped: " + e.Message + "\r\n"); }
+        catch { }
     }
 
     // ra3 1.12: the CRC send code tests the deep CRC byte right here (cmp byte [0xCE80EB],0)
@@ -121,19 +78,6 @@ static class Program
         foreach (var pt in patches) Write(IntPtr.Zero, pt.at, pt.put);
         FlushCode(IntPtr.Zero);
         return true;
-    }
-
-    // dump files are just the frame number, keep the newest 40 (2 minutes online)
-    static void PruneCrcDumps(DateTime since)
-    {
-        try
-        {
-            var files = new DirectoryInfo(Environment.CurrentDirectory).GetFiles()
-                .Where(fi => fi.Name.All(char.IsDigit) && fi.LastWriteTime >= since)
-                .OrderByDescending(fi => fi.LastWriteTime).Skip(40);
-            foreach (var fi in files) fi.Delete();
-        }
-        catch { }
     }
 
     static void AppendLog(string dir, string text)
@@ -1194,10 +1138,8 @@ static class Program
         for (int k = 1; k <= 6; k++) Write(proc, phaseInterp + (uint)((k - 1) * 4), BitConverter.GetBytes(Math.Min(1f, (float)(k * (double)(1f / 6f)))));
 
         // stub A: replaces mov ecx,[esi+phase] / cmp ecx,6
-        syncMem = mem; syncFps = BitConverter.ToInt32(Read(proc, fpsVa, 4), 0); syncHz = 3000 / site.Tick;
         var a = new Asm(stubA);
         a.E(0x89, 0x35); a.D(eng);                                   // mov [engine],esi
-        a.E(0xFF, 0x05); a.D(mem + 0xFE0);                           // sync log: frames drawn
         a.E(0x50, 0x52, 0x51);                                       // push eax / push edx / push ecx
         a.E(0xA1); a.D(fpsVa); a.E(0x33, 0xD2, 0xB9, 0x0F, 0, 0, 0, 0xF7, 0xF1); a.E(0xA3); a.D(r);   // r = fps / 15
         a.Rel(0xE8, site.TimeFn);                                   // eax = ms (timeGetTime)
@@ -1208,10 +1150,7 @@ static class Program
         a.E(0x8B, 0x4E, ph);                                         // ecx = phase
         a.E(0x83, 0x3D); a.D(pend); a.E(0x00); a.J(0x74, "nopend");  // started a tick last frame?
         a.E(0xC7, 0x05); a.D(pend); a.D(0);
-        a.E(0x83, 0xF9, 0x06); a.J(0x73, "heldback");               // wrapped = it started
-        a.E(0xFF, 0x05); a.D(mem + 0xFE8); a.J(0xEB, "nopend");      // sync log: ticks that ran
-        a.L("heldback");
-        a.E(0xFF, 0x05); a.D(mem + 0xFE4);                           // sync log: frames the network held a tick back
+        a.E(0x83, 0xF9, 0x06); a.J(0x72, "nopend");                 // wrapped = it started
         a.E(0x81, 0x2D); a.D(t0); a.D((uint)T);                      // network held it back, undo
         a.L("nopend");
         a.E(0x8B, 0xD0, 0x2B, 0x15); a.D(t0);                        // edx = t = now3 - tickStart
