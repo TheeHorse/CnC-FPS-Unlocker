@@ -12,6 +12,7 @@ using System.Linq;
 using System.Runtime.InteropServices;
 using System.Text;
 using System.Text.RegularExpressions;
+using System.Threading;
 
 static class Program
 {
@@ -20,7 +21,125 @@ static class Program
     // called from inside the game (dll/proxy.c)
     internal static int InProcess(string dir)
     {
-        return Patch(IntPtr.Zero, Process.GetCurrentProcess().MainModule.FileName, dir, "drop-in DLL");
+        int r = Patch(IntPtr.Zero, Process.GetCurrentProcess().MainModule.FileName, dir, "drop-in DLL");
+        if (r == 1 && syncMem != 0) new Thread(() => SyncLog(dir)) { IsBackground = true }.Start();
+        return r;
+    }
+
+    // sync log (test build): counters bumped by scheduler stub A. frames drawn +FE0, frames a tick was held back by the network +FE4, ticks that ran +FE8.
+    // writes a line for every bad second (fps well under target, logic under 15 ticks/s, network holding ticks back, a gap
+    // between ticks over 150 ms) and a summary every minute, so a slow/out of sync game can be matched to who was behind
+    static uint syncMem; static int syncFps, syncHz = 15;
+    static uint realClockFn;   // set by PatchScheduler when the effects real clock is on
+    static bool realclockOpt;
+    static void SyncLog(string dir)
+    {
+        try
+        {
+            Func<uint, int> rd = o => Marshal.ReadInt32((IntPtr)(syncMem + o));
+            AppendLog(dir, "sync log on: a line per bad second (fps < " + (syncFps * 8 / 10) + ", ticks < " + (syncHz - 1) + ", waiting on network, gap > " + (2250 / syncHz) + " ms) + a summary per minute\r\n");
+            var sw = Stopwatch.StartNew();
+            int f0 = rd(0xFE0), h0 = rd(0xFE4), t0 = rd(0xFE8), lastT = t0, lines = 0;
+            double sec = 0, lastTick = 0, gapMax = 0;
+            int mFrames = 0, mTicks = 0, mHeld = 0, mStalls = 0, mFpsMin = int.MaxValue, mSecs = 0; double mGap = 0;
+            // crcdump=1 (ra3 1.12, desync hunting): the game's own deep CRC switch. online it then writes everything that goes
+            // into each CRC to a file named after the logic frame (every 45 frames), so two players' files at the frame the
+            // CRCs differed show what differed. set from here, not at patch time, so the game's startup can't clear it again
+            bool dump = ReadIni(Path.Combine(dir, "RA3HighFps.ini"), "crcdump") == "1" && CrcDumpSiteOk() && CrcDumpKeepLite();
+            var dumpStart = DateTime.Now.AddMinutes(-1);
+            if (dump) AppendLog(dir, "crc dump on: if the game goes out of sync it writes DESYNC-Frame*.txt (everything in the CRC at that frame) next to the game exe\r\n");
+            while (lines < 20000)
+            {
+                Thread.Sleep(5);
+                double now = sw.Elapsed.TotalSeconds;
+                int t = rd(0xFE8);
+                if (t != lastT)
+                {
+                    double g = (now - lastTick) * 1000;
+                    if (lastTick > 0 && g > gapMax) gapMax = g;
+                    if (lastTick > 0 && g > 2250 / syncHz) mStalls++;
+                    lastTick = now; lastT = t;
+                }
+                if (now - sec < 1) continue;
+                double span = now - sec; sec = now;
+                if (dump)
+                {
+                    if (Marshal.ReadByte((IntPtr)CrcDumpFlag) == 0) Marshal.WriteByte((IntPtr)CrcDumpFlag, 1);
+                    if (Marshal.ReadByte((IntPtr)CrcLiteFlag) != 0) Marshal.WriteByte((IntPtr)CrcLiteFlag, 0);   // every object, not 1 in 10
+                    if ((int)now % 10 == 0) PruneCrcDumps(dumpStart);
+                }
+                int f = rd(0xFE0), h = rd(0xFE4);
+                int fps = (int)Math.Round((f - f0) / span), ticks = t - t0, held = h - h0;
+                f0 = f; h0 = h; t0 = t;
+                if (ticks == 0 && held == 0) { gapMax = 0; lastTick = 0; continue; }   // paused, loading or game over
+                mFrames += fps; mTicks += ticks; mHeld += held; mSecs++; mFpsMin = Math.Min(mFpsMin, fps); mGap = Math.Max(mGap, gapMax);
+                if (fps < syncFps * 8 / 10 || ticks < syncHz - 1 || held > 0 || gapMax > 2250 / syncHz)
+                {
+                    AppendLog(dir, DateTime.Now.ToString("HH:mm:ss") + "  fps " + fps + "  ticks " + ticks + "/" + syncHz + "  waiting on network " + held + " frames  longest gap " + (int)gapMax + " ms\r\n");
+                    lines++;
+                }
+                gapMax = 0;
+                if (mSecs >= 60)
+                {
+                    AppendLog(dir, DateTime.Now.ToString("HH:mm:ss") + "  last minute: fps avg " + (mFrames / mSecs) + " min " + mFpsMin + ", ticks " +
+                        (mTicks / (double)mSecs).ToString("F2", System.Globalization.CultureInfo.InvariantCulture) + "/s, frames waiting on network " + mHeld +
+                        ", stalls over " + (2250 / syncHz) + " ms " + mStalls + ", longest gap " + (int)mGap + " ms\r\n");
+                    lines++; mFrames = mTicks = mHeld = mStalls = mSecs = 0; mFpsMin = int.MaxValue; mGap = 0;
+                }
+            }
+        }
+        catch (Exception e) { AppendLog(dir, "sync log stopped: " + e.Message + "\r\n"); }
+    }
+
+    // ra3 1.12: the CRC send code tests the deep CRC byte right here (cmp byte [0xCE80EB],0)
+    const uint CrcDumpFlag = 0xCE80EB;
+    // stock CRCs only every 10th object (and a cheap one in between); off in dump mode so the dump has the first object that differs
+    const uint CrcLiteFlag = 0xCB4634;
+    static bool CrcDumpSiteOk()
+    {
+        byte[] want = { 0x80, 0x3D, 0xEB, 0x80, 0xCE, 0x00, 0x00 }, have = new byte[7];
+        try { Marshal.Copy((IntPtr)0x539D7F, have, 0, 7); } catch { return false; }
+        return want.SequenceEqual(have);
+    }
+
+    // a normal CRC sets xfer flag 8, which makes ~20 xfer functions skip their client-only blocks (fog of war, each pc's
+    // own player view, ...). deep CRC alone leaves it clear, so those blocks went in and the CRC differed on that alone.
+    // so in dump mode: always set flag 8 (nop the je at 0x519D76 that sets it only for normal CRCs), and since flag 8 also
+    // switches the dump to binary, which never gets written out, force text mode where the dump opens (sete dl at
+    // 0xB1EFE4 -> mov dl,1). result: exactly the normal CRC, plus the text of everything in it
+    static bool CrcDumpKeepLite()
+    {
+        var patches = new[] {
+            new { at = 0x519D76u, want = new byte[] { 0x74, 0x05, 0x83, 0x4C, 0x24, 0x24, 0x08 }, put = new byte[] { 0x90, 0x90 } },
+            new { at = 0xB1EFE4u, want = new byte[] { 0x0F, 0x94, 0xC2, 0x8B, 0xCE, 0x52 }, put = new byte[] { 0xB2, 0x01, 0x90 } } };
+        foreach (var pt in patches)
+        {
+            var have = new byte[pt.want.Length];
+            try { Marshal.Copy((IntPtr)pt.at, have, 0, have.Length); } catch { return false; }
+            if (!pt.want.SequenceEqual(have)) return false;
+        }
+        foreach (var pt in patches) Write(IntPtr.Zero, pt.at, pt.put);
+        FlushCode(IntPtr.Zero);
+        return true;
+    }
+
+    // dump files are just the frame number, keep the newest 40 (2 minutes online)
+    static void PruneCrcDumps(DateTime since)
+    {
+        try
+        {
+            var files = new DirectoryInfo(Environment.CurrentDirectory).GetFiles()
+                .Where(fi => fi.Name.All(char.IsDigit) && fi.LastWriteTime >= since)
+                .OrderByDescending(fi => fi.LastWriteTime).Skip(40);
+            foreach (var fi in files) fi.Delete();
+        }
+        catch { }
+    }
+
+    static void AppendLog(string dir, string text)
+    {
+        try { File.AppendAllText(Path.Combine(Path.GetTempPath(), "RA3HighFps.log"), text); } catch { }
+        try { File.AppendAllText(Path.Combine(dir, "RA3HighFps.log"), text); } catch { }
     }
 
     // RA3HighFps.exe on linux (proton's .net runs exes but the dll can't host it): game started suspended,
@@ -44,6 +163,7 @@ static class Program
             if (hz >= 30 && fps > hz / 15 * 15) fps = Math.Max(30, hz / 15 * 15);
             img = MapImage(File.ReadAllBytes(exe));
             skip = (ReadIni(ini, "skip") ?? "").ToLowerInvariant();
+            realclockOpt = ReadIni(ini, "realclock") == "1";   // effects on real time: opt-in until its crash is found
             offscreenAnim = ReadIni(ini, "offscreenanim") == "1";
             // bfme2: same engine family, its own code shapes (cdq/idiv), so its own path
             BfmeSites bfme = Scan(img, FrameMsSig).Count == 0 ? FindBfme(img) : null;
@@ -173,10 +293,21 @@ static class Program
         Write(proc, (uint)mem, BitConverter.GetBytes(fps));
         if (sched)
         {
-            // scheduler does the timing now, these two need the one-phase-per-call path (fps/15 >= 6)
+            // scheduler does the timing now. the two phase-ratio reads (dispatcher + tick boundary) get stock's 30 fps ratio
+            // so the dispatcher runs each tick as stock does, phases 1-3 in one go and 4-6 in one go: the logic then runs in
+            // the same order with the same steps on every pc whatever the fps (online desyncs). skip=batches: old path,
+            // one phase per call (max(fps, 90))
             List<uint> ratio = sites.Where(s => IsPhaseRatioSite(img, s)).ToList();
+            int logicFps = BitConverter.ToInt32(img, (int)(render - 4 - ImageBase));
+            if (logicFps <= 0 || logicFps > 30) logicFps = 15;
+            // only the dispatcher's read gets the stock ratio. the other one is the engine's "high fps mode?" function (its
+            // fps read is the first instruction): drawing and the frame loop ask it whether to interpolate, so it keeps
+            // saying yes or movement goes back to stock's two steps per tick
+            List<uint> modeCheck = ratio.Where(s => img[(int)(s - 2 - ImageBase)] == 0xCC).ToList();
             Write(proc, (uint)mem + 0x90, BitConverter.GetBytes(Math.Max(fps, 90)));
-            Redirect(proc, ratio, (uint)mem + 0x90);
+            Write(proc, (uint)mem + 0x94, BitConverter.GetBytes(On("batches") ? 2 * logicFps : Math.Max(fps, 90)));
+            Redirect(proc, modeCheck, (uint)mem + 0x90);
+            Redirect(proc, ratio.Except(modeCheck).ToList(), (uint)mem + 0x94);
             Redirect(proc, sites.Except(ratio).ToList(), (uint)mem);
         }
         else Redirect(proc, sites, (uint)mem);
@@ -185,7 +316,7 @@ static class Program
         if (On("scroll") && scrollSlot != 0 && fps > 30) PatchScrollBy(proc, scrollSlot, scrollFunc, fps, (uint)mem + 0x4F0, (uint)mem + 0x4F8, (uint)mem + 0x3C0);
         if (On("interp") && interpWindow.Count > 0) PatchInterpWindow(proc, interpWindow, fps);
         if (On("camerakeys") && held != null && fps > 30) PatchHeldCamera(proc, img, held, fps, (uint)mem + 0xC00, (uint)mem + 0xC40);
-        if (sched) PatchScheduler(proc, img, schedSite, (uint)mem, (uint)mem);
+        if (sched) PatchScheduler(proc, img, schedSite, (uint)mem, (uint)mem, On("batches"));
         if (On("limiter") && limiter != 0) PatchLimiterRounding(proc, limiter, limiterRA3, (uint)mem + 0x28, (uint)mem + 0x2C, (uint)mem + 0x280);
         if (On("construction") && unpack != 0) PatchUnpack(proc, img, unpack, (uint)mem + 0x200, sched ? (uint)mem + 0x3C : 0, (uint)mem + 0x4E0);   // construction
         if (On("anim2d") && anim2d.Count > 0) PatchAnim2D(proc, img, anim2d, (uint)mem, (uint)mem + 0x100);
@@ -203,6 +334,7 @@ static class Program
         if (On("models") && modelStep != 0) Redirect(proc, new List<uint> { modelStep }, (uint)mem + 0x10);   // 1/fps instead of 1/30
         if (On("particles") && throttlePfx && pfxSite != 0)
             ThrottleParticles(proc, pfxSite, pfxSim, (uint)mem, (uint)mem + 8, (uint)mem + 0x40);
+        if (realClockFn != 0) UseRealClock(proc, (uint)mem);
         FlushCode(proc);
 
         // where everything went, so a crash address in the log can be matched to a fix
@@ -1031,7 +1163,7 @@ static class Program
         return null;
     }
 
-    static void PatchScheduler(IntPtr proc, byte[] img, SchedSite site, uint fpsVa, uint mem)
+    static void PatchScheduler(IntPtr proc, byte[] img, SchedSite site, uint fpsVa, uint mem, bool batches = false)
     {
         Func<uint, byte[]> u = BitConverter.GetBytes;
         uint eng = mem + 0x3C, r = mem + 0x38, now3 = mem + 0x80, t0 = mem + 0x84, pend = mem + 0x88, k200 = mem + 0x8C;
@@ -1039,15 +1171,33 @@ static class Program
         // phase k is due once (time into the tick + this frame) reaches k/6, the moment stock has interp = k/6.
         // interp then rises smoothly from k/6 toward (k+1)/6 until the next phase. at 90 that's stock exactly.
         // (it used to run phase k at (k-1)/6, so interp sat ~1/6 behind the phase that just ran: turrets wobbled, #11)
-        int T = site.Tick;   // 1/3 ms per logic tick
+        // 1/3 ms per logic tick. stock's limiter waits whole ms (33 per frame at 30 fps), so stock really runs 66 ms ticks
+        // (15.15/s, measured). online every pc has to tick at the same rate or the faster one keeps stalling on the slower
+        // one (lag), so match stock exactly: 198 instead of 200
+        int T = site.Tick * 99 / 100;
         for (int k = 1; k <= 6; k++) Write(proc, table + (uint)((k - 1) * 4), BitConverter.GetBytes(k * T / 6 - 3));   // 30 63 97 130 163 197 at 15 hz
+        // batches: phases 1-3 run together when the tick starts (wrap), 4-6 together at half a tick. the scan only has to see
+        // phase 4 come due; 5 and 6 never (the dispatcher runs them with 4). interp: 0..1/2 after 1-3, 1/2..1 after 4-6
+        uint itable = table;
+        if (batches)
+        {
+            itable = mem + 0xF00;
+            int[] due = { 0, 0, 0, T / 2 - 3, int.MaxValue, int.MaxValue }, band = { 0, 0, 0, T / 2, T / 2, T / 2 };
+            for (int k = 0; k < 6; k++) { Write(proc, table + (uint)(k * 4), BitConverter.GetBytes(due[k])); Write(proc, itable + (uint)(k * 4), BitConverter.GetBytes(band[k])); }
+        }
         uint exitGlobal = BitConverter.ToUInt32(img, (int)(site.Exit + 2 - ImageBase));
         byte ph = site.Phase;
         Write(proc, k200, BitConverter.GetBytes((float)T));
+        // stock sets interp to exactly phase/6 (float n * (1/6f), max 1) before every phase it runs. the phases stub A runs
+        // itself have to see the same value, not stub B's time based one, or logic run in them can differ between pcs (desync)
+        uint phaseInterp = mem + 0xFC0;
+        for (int k = 1; k <= 6; k++) Write(proc, phaseInterp + (uint)((k - 1) * 4), BitConverter.GetBytes(Math.Min(1f, (float)(k * (double)(1f / 6f)))));
 
         // stub A: replaces mov ecx,[esi+phase] / cmp ecx,6
+        syncMem = mem; syncFps = BitConverter.ToInt32(Read(proc, fpsVa, 4), 0); syncHz = 3000 / site.Tick;
         var a = new Asm(stubA);
         a.E(0x89, 0x35); a.D(eng);                                   // mov [engine],esi
+        a.E(0xFF, 0x05); a.D(mem + 0xFE0);                           // sync log: frames drawn
         a.E(0x50, 0x52, 0x51);                                       // push eax / push edx / push ecx
         a.E(0xA1); a.D(fpsVa); a.E(0x33, 0xD2, 0xB9, 0x0F, 0, 0, 0, 0xF7, 0xF1); a.E(0xA3); a.D(r);   // r = fps / 15
         a.Rel(0xE8, site.TimeFn);                                   // eax = ms (timeGetTime)
@@ -1058,7 +1208,10 @@ static class Program
         a.E(0x8B, 0x4E, ph);                                         // ecx = phase
         a.E(0x83, 0x3D); a.D(pend); a.E(0x00); a.J(0x74, "nopend");  // started a tick last frame?
         a.E(0xC7, 0x05); a.D(pend); a.D(0);
-        a.E(0x83, 0xF9, 0x06); a.J(0x72, "nopend");                 // wrapped = it started
+        a.E(0x83, 0xF9, 0x06); a.J(0x73, "heldback");               // wrapped = it started
+        a.E(0xFF, 0x05); a.D(mem + 0xFE8); a.J(0xEB, "nopend");      // sync log: ticks that ran
+        a.L("heldback");
+        a.E(0xFF, 0x05); a.D(mem + 0xFE4);                           // sync log: frames the network held a tick back
         a.E(0x81, 0x2D); a.D(t0); a.D((uint)T);                      // network held it back, undo
         a.L("nopend");
         a.E(0x8B, 0xD0, 0x2B, 0x15); a.D(t0);                        // edx = t = now3 - tickStart
@@ -1071,7 +1224,7 @@ static class Program
         a.E(0x03, 0xD0, 0x58);                                       // edx = t + frame length / pop eax
         a.E(0x83, 0xF9, 0x06); a.J(0x72, "mid");
         // phase 6 done. phase 1 of the next tick is due at 200 + 33 (thresholds are 1ms early, now3 rounds down)
-        a.E(0x81, 0xFA); a.D((uint)(T + T / 6 - 3)); a.J(0x7C, "idle");
+        a.E(0x81, 0xFA); a.D((uint)(batches ? T - 3 : T + T / 6 - 3)); a.J(0x7C, "idle");
         a.E(0x81, 0x05); a.D(t0); a.D((uint)T);                      // tickStart += one tick
         a.E(0xA3); a.D(tickFrame);
         a.E(0xC7, 0x05); a.D(pend); a.D(1);
@@ -1089,6 +1242,7 @@ static class Program
         a.L("loop");                                                 // all but the last one
         a.E(0x8D, 0x51, 0x01, 0x3B, 0xD0); a.J(0x73, "pass");
         a.E(0x89, 0x56, ph, 0x50);                                   // [phase]=n / push eax
+        a.E(0x8B, 0x04, 0x95); a.D(phaseInterp - 4); a.E(0x89, 0x46, site.Interp);   // [interp] = n/6 like stock (eax popped after)
         if (site.PreFn != 0)
         {
             a.E(0x8B, 0x0D); a.D(site.PreGlobal); a.E(0x8B, 0x49, site.PreOff, 0x6B, 0xC9, 0x0A, 0x8D, 0x4C, 0x11, 0xFF);   // ecx = [[g]+off]*10 + n - 1
@@ -1101,6 +1255,25 @@ static class Program
         a.L("pass");                                                 // back to original
         a.E(0x59, 0x5A, 0x58, 0x8B, 0x4E, ph, 0x83, 0xF9, 0x06, 0xC3);
         Write(proc, stubA, a.Done(0x200));
+
+        // real clock for effects (skip=realclock): effect stubs turn drawn frames into a 30 hz clock with frames * 30 / fps,
+        // which runs slow whenever the pc draws fewer frames than the setting (big fights). this gives them
+        // (ms since start) * fps / 1000 instead, same scale but real time. drawing only, logic never sees it
+        realClockFn = 0;
+        if (realclockOpt && On("realclock") && site.TimeFn != 0)
+        {
+            uint fn = mem + 0xF40, rbase = mem + 0xF38;
+            var rc = new Asm(fn);
+            rc.E(0x51, 0x52); rc.Rel(0xE8, site.TimeFn);                          // push ecx / push edx / eax = ms
+            rc.E(0x8B, 0x0D); rc.D(rbase); rc.E(0x85, 0xC9); rc.J(0x75, "have");    // first call: base = now
+            rc.E(0xA3); rc.D(rbase); rc.E(0x8B, 0xC8);
+            rc.L("have");
+            rc.E(0x2B, 0xC1, 0xF7, 0x25); rc.D(fpsVa);                           // eax -= base / edx:eax = eax * fps
+            rc.E(0xB9); rc.D(1000); rc.E(0xF7, 0xF1);                              // / 1000
+            rc.E(0x5A, 0x59, 0xC3);
+            Write(proc, fn, rc.Done(0x40));
+            realClockFn = fn;
+        }
 
         // stub B: replaces mov ecx,[global] at the exit.
         // interp = (now - tickStart + frame length) / 200, max 1
@@ -1119,10 +1292,10 @@ static class Program
         b.L("b2");
         // keep it between phase/6 and (phase+1)/6, it never runs ahead of what logic did
         b.E(0x8B, 0x56, ph, 0x8D, 0x4A, 0xFF, 0x83, 0xF9, 0x05); b.J(0x77, "b4");     // edx = phase / ecx = phase-1 / ja (not 1..6)
-        b.E(0x3B, 0x04, 0x8D); b.D(table); b.J(0x7D, "b3"); b.E(0x8B, 0x04, 0x8D); b.D(table);   // eax = max(eax, T[phase-1])
+        b.E(0x3B, 0x04, 0x8D); b.D(itable); b.J(0x7D, "b3"); b.E(0x8B, 0x04, 0x8D); b.D(itable);   // eax = max(eax, T[phase-1])
         b.L("b3");
         b.E(0x83, 0xFA, 0x06); b.J(0x7D, "b4");                                    // phase 6: max stays 200
-        b.E(0x3B, 0x04, 0x95); b.D(table); b.J(0x7E, "b4"); b.E(0x8B, 0x04, 0x95); b.D(table);   // eax = min(eax, T[phase])
+        b.E(0x3B, 0x04, 0x95); b.D(itable); b.J(0x7E, "b4"); b.E(0x8B, 0x04, 0x95); b.D(itable);   // eax = min(eax, T[phase])
         b.L("b4");
         b.E(0x50, 0xDB, 0x04, 0x24, 0xD8, 0x35); b.D(k200); b.E(0xD9, 0x5E, site.Interp, 0x58);   // [interp] = eax / 200
         b.E(0x59, 0x5A, 0x58, 0x8B, 0x0D); b.D(exitGlobal); b.E(0xC3);        Write(proc, stubB, b.Done(0x100));
@@ -1986,9 +2159,47 @@ static class Program
         return site;
     }
 
+    // every "mov eax,[ecx] / call [eax+74h]" (GameClient::getFrame) in our own stubs becomes "call realclock" (same 5
+    // bytes), so the 30 hz clocks of fades, 2d anims, pulses, blinks and turrets run on real time
+    static void UseRealClock(IntPtr proc, uint mem)
+    {
+        byte[] m = Read(proc, mem, 0xF00), pat = { 0x8B, 0x01, 0xFF, 0x50, 0x74 };
+        for (int i = 0; i + 5 <= m.Length; i++)
+        {
+            int k = 0; while (k < 5 && m[i + k] == pat[k]) k++;
+            if (k < 5) continue;
+            uint at = mem + (uint)i;
+            var c = new List<byte> { 0xE8 }; c.AddRange(BitConverter.GetBytes(realClockFn - (at + 5)));
+            Write(proc, at, c.ToArray());
+            i += 4;
+        }
+    }
+
     // acc += 30; if (acc >= fps) { acc -= fps; jmp simulate } else ret
+    // with the real clock: acc += 30 * (real frames since last call) instead of 30, capped below one step so a slow
+    // stretch doesn't leave a backlog
     static void ThrottleParticles(IntPtr proc, uint site, uint sim, uint fpsVa, uint accVa, uint stubVa)
     {
+        if (realClockFn != 0)
+        {
+            uint last = accVa + 0xEF0;   // mem+0xEF8 (accVa = mem+8)
+            var t = new Asm(stubVa);
+            t.Rel(0xE8, realClockFn); t.E(0x8B, 0xD0, 0x2B, 0x05); t.D(last); t.E(0x89, 0x15); t.D(last);   // eax = frames since last
+            t.E(0x6B, 0xC0, 0x1E, 0x03, 0x05); t.D(accVa);                                                     // eax = eax*30 + acc
+            t.E(0x3B, 0x05); t.D(fpsVa); t.J(0x7C, "skip");
+            t.E(0x2B, 0x05); t.D(fpsVa); t.E(0x3B, 0x05); t.D(fpsVa); t.J(0x7C, "ok"); t.E(0x33, 0xC0);
+            t.L("ok");
+            t.E(0xA3); t.D(accVa); t.Rel(0xE9, sim);
+            t.L("skip");
+            t.E(0xA3); t.D(accVa); t.E(0xC3);
+            Write(proc, stubVa, t.Done(0xC0));
+            var jc = new List<byte> { 0xE8 }; jc.AddRange(BitConverter.GetBytes(stubVa - (site + 5)));
+            uint o2;
+            if (!Protect(proc, (IntPtr)site, (UIntPtr)5, PAGE_EXECUTE_READWRITE, out o2)) throw new Exception("couldn't unprotect game memory");
+            Write(proc, site, jc.ToArray());
+            Protect(proc, (IntPtr)site, (UIntPtr)5, o2, out o2);
+            return;
+        }
         var s = new List<byte>();
         Action<byte[]> e = b => s.AddRange(b);
         Func<uint, byte[]> u = BitConverter.GetBytes;
