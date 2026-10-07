@@ -328,7 +328,7 @@ static class Program
         if (On("pulse") && pulse != null && fps > 30) PatchPulse(proc, pulse, (uint)mem, (uint)mem + 0xB20);
         if (On("topple") && topple != null && fps > 30) PatchTopple(proc, topple, (uint)mem + 0xBA0);
         if (On("offscreenanim") && offscreenAnim && animGate != 0 && fps > 30) Write(proc, animGate, new byte[] { 0xEB });   // jne -> jmp
-        if (On("turrets") && turretSite != null && sched && fps > 30) PatchTurretInterp(proc, img, turretSite, schedSite, (uint)mem + 0xB80, (uint)mem + 0xD48);
+        if (On("turrets") && turretSite != null && sched && fps > 30) PatchTurretInterp(proc, img, turretSite, schedSite, (uint)mem + 0xB80, (uint)mem + 0xD48, On("batches"));
         if ((blinks.Sites.Count > 0 || blinks.Tint.Count > 0 || blinks.TimerUpdate != 0) && fps > 30) PatchBlinks(proc, blinks, (uint)mem, (uint)mem + 0xB00);
         if (On("stream") && stream != 0 && fps > 30) PatchStreamUpdate(proc, img, stream, (uint)mem, (uint)mem + 0xFA0);
         if (On("models") && modelStep != 0) Redirect(proc, new List<uint> { modelStep }, (uint)mem + 0x10);   // 1/fps instead of 1/30
@@ -1725,7 +1725,7 @@ static class Program
         return count.Count == 0 ? 0 : count.OrderByDescending(kv => kv.Value).First().Key;
     }
 
-    static void PatchTurretInterp(IntPtr proc, byte[] img, TurretSite t, SchedSite sched, uint data, uint stubVa)
+    static void PatchTurretInterp(IntPtr proc, byte[] img, TurretSite t, SchedSite sched, uint data, uint stubVa, bool batches = false)
     {
         uint site = t.Site, engine = t.Engine, client = FindClient(img);
         if (client == 0) return;
@@ -1740,8 +1740,17 @@ static class Program
         a.E(0x8B, 0x01, 0xFF, 0x50, t.Slot);                                // eax = getFrame()
         a.E(0x3B, 0x05); a.D(gFrame); a.J(0x74, "done");                    // decided this frame already
         a.E(0xA3); a.D(gFrame);
-        a.E(0xA1); a.D(engine); a.E(0xF3, 0x0F, 0x10, 0x40, t.Off);         // xmm0 = interp
-        a.E(0x0F, 0x2E, 0x05); a.D(one); a.J(0x7A, "notone"); a.J(0x75, "notone");   // ucomiss xmm0,[1.0]
+        if (batches)
+        {
+            // with stock batches interp runs 1/2..1 and the next tick starts before it reaches 1.0, so "tick done" is
+            // phase 6 instead (same moment the old 1.0 marked: all phases of the tick ran)
+            a.E(0xA1); a.D(engine); a.E(0x83, 0x78, sched.Phase, 0x06); a.J(0x75, "notone");   // cmp dword [eax+phase],6
+        }
+        else
+        {
+            a.E(0xA1); a.D(engine); a.E(0xF3, 0x0F, 0x10, 0x40, t.Off);     // xmm0 = interp
+            a.E(0x0F, 0x2E, 0x05); a.D(one); a.J(0x7A, "notone"); a.J(0x75, "notone");   // ucomiss xmm0,[1.0]
+        }
         a.E(0x80, 0x3D); a.D(gInOne); a.E(0x00); a.J(0x75, "noshift");      // already in this 1.0 run
         a.E(0xC6, 0x05); a.D(gInOne); a.E(0x01);
         a.E(0xC6, 0x05); a.D(gShift); a.E(0x01);
