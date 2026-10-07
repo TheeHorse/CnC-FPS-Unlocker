@@ -9,7 +9,7 @@
 #ifndef Files
   #define Files "..\bin"
 #endif
-#define Version "1.9.3"
+#define Version "1.10"
 
 [Setup]
 AppId=TheeHorse.CnCFpsUnlocker
