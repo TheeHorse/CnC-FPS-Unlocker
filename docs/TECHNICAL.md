@@ -145,7 +145,9 @@ Tanks, cars and boats tilt with a little spring (pitch/roll, plus a slow wobble 
 
 ## Linux
 
-Proton and Wine run .NET exes with their own Mono, but the dll hosting .NET from inside the game (`ExecuteInDefaultAppDomain`) fails there. So under Wine `RA3HighFps.exe` does what the stock launcher does (highest SkuDef for the language, `set-exe` from it, `-config <skudef>`), starts the game suspended, has `CnCFpsUnlocker.dll` patch it from outside (`VirtualAllocEx` / `WriteProcessMemory`, same patch code), then resumes it. If the drop-in dll also loads it sees the game is already patched and does nothing. On Windows the exe still just passes through.
+Proton and Wine host .NET with their own wine-mono, and that works fine for the drop-in dll. It only failed up to 1.9.4 because of the class name: Wine's `ExecuteInDefaultAppDomain` splits the type name at the last dot and returns E_INVALIDARG (80070057) if there's none, and the dll asked for plain `DllEntry`. Since 1.9.5 it calls `SAGEUnlocked.DllEntry`, so Linux uses the same files as Windows with no launch option and no .NET install.
+
+The old way still exists: under Wine `RA3HighFps.exe` does what the stock launcher does (highest SkuDef for the language, `set-exe` from it, `-config <skudef>`), starts the game suspended, has `CnCFpsUnlocker.dll` patch it from outside (`VirtualAllocEx` / `WriteProcessMemory`, same patch code), then resumes it. If the drop-in dll also loads it sees the game is already patched and does nothing. On Windows the exe just passes through.
 
 ## Leftovers
 

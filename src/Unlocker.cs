@@ -142,7 +142,7 @@ static class Program
     }
 
     // %TEMP%\SAGEUnlocked.log, and a copy next to the game where people look first (may be read-only, then just temp).
-    // the drop-in dll (d3d9.dll / dinput8.dll, unchanged since 1.9.4) still writes its own lines (.NET start failures,
+    // the drop-in dll (d3d9.dll / dinput8.dll) still writes its own lines (.NET start failures,
     // crashes) to RA3HighFps.log, so that one stays
     const string LogName = "SAGEUnlocked.log";
     static void WriteLog(string dir, string text)
@@ -2448,7 +2448,7 @@ public static class DllEntry
     public static int Launch(IntPtr proc, string exe, string dir) { return Program.Launch(proc, exe, dir); }
 }
 
-// what the drop-in dll calls since 1.9.6. wine-mono's ExecuteInDefaultAppDomain needs a namespace in the type
+// what the drop-in dll calls since 1.9.5. wine-mono's ExecuteInDefaultAppDomain needs a namespace in the type
 // name (no dot = E_INVALIDARG, 80070057), so plain "DllEntry" never ran under proton. real .net takes either
 namespace SAGEUnlocked
 {
