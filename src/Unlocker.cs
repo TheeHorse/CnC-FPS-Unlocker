@@ -226,6 +226,7 @@ static class Program
         Cnc3Fx fx = FindCnc3Fx(img, modelStep);
         uint trailLock = FindTrailLock(img);
         SwaySite sway = FindSway(img);
+        Cnc3SwaySite sway3 = sway == null ? FindCnc3Sway(img) : null;   // tw/kw
         uint stream = FindStreamUpdate(img);
         uint audioFn, audioSlot = FindAudioUpdateSlot(img, out audioFn);
         FloatTextSites floatText = FindFloatingText(img);
@@ -243,7 +244,7 @@ static class Program
             new { n = "anim2d", ok = anim2d.Count > 0 }, new { n = "models", ok = modelStep != 0 }, new { n = "particles", ok = pfxSite != 0 },
             new { n = "fades", ok = fades.Count > 0 || fx.Fades.Count > 0 }, new { n = "zoom", ok = zoomSite != 0 },
             new { n = "camsteps", ok = fx.CameraStep != 0 }, new { n = "fxframes", ok = fx.Frame5.Count > 0 }, new { n = "throb", ok = fx.Throb != 0 },
-            new { n = "shake", ok = fx.Shake != 0 }, new { n = "traillock", ok = trailLock != 0 }, new { n = "sway", ok = sway != null }, new { n = "stream", ok = stream != 0 }, new { n = "audio", ok = audioSlot != 0 }, new { n = "floattext", ok = floatText != null }, new { n = "fpsframes", ok = fpsFrames.Count > 0 }, new { n = "blinks", ok = blinks.Sites.Count > 0 }, new { n = "tint", ok = blinks.Tint.Count > 0 }, new { n = "modeltimer", ok = blinks.TimerUpdate != 0 }, new { n = "pulse", ok = pulse != null }, new { n = "turrets", ok = turretSite != null }, new { n = "topple", ok = topple != null }, new { n = "offscreenanim", ok = animGate != 0 } };
+            new { n = "shake", ok = fx.Shake != 0 }, new { n = "traillock", ok = trailLock != 0 }, new { n = "sway", ok = sway != null || sway3 != null }, new { n = "stream", ok = stream != 0 }, new { n = "audio", ok = audioSlot != 0 }, new { n = "floattext", ok = floatText != null }, new { n = "fpsframes", ok = fpsFrames.Count > 0 }, new { n = "blinks", ok = blinks.Sites.Count > 0 }, new { n = "tint", ok = blinks.Tint.Count > 0 }, new { n = "modeltimer", ok = blinks.TimerUpdate != 0 }, new { n = "pulse", ok = pulse != null }, new { n = "turrets", ok = turretSite != null }, new { n = "topple", ok = topple != null }, new { n = "offscreenanim", ok = animGate != 0 } };
         found = "found: " + string.Join(" ", have.Where(h => h.ok).Select(h => h.n)) + " | missing: " + string.Join(" ", have.Where(h => !h.ok).Select(h => h.n));
 
         // +0 fps, +8 particle accum, +40 stubs. the first page is full, newer things go in the second (+1000 and up)
@@ -300,6 +301,7 @@ static class Program
         PatchCnc3Fx(proc, fx, fps, (uint)mem, (uint)mem + 0x10, (uint)mem + 0xD00, (uint)mem + 0xD40);
         if (On("traillock") && trailLock != 0) PatchTrailLock(proc, trailLock, (uint)mem + 0xE00);
         if (On("sway") && sway != null && fps > 30) PatchSway(proc, img, sway, (uint)mem, (uint)mem + 0xE40);
+        if (On("sway") && sway3 != null && fps > 30) PatchCnc3Sway(proc, img, sway3, (uint)mem, (uint)mem + 0x1300);
         if (On("fpsframes") && fpsFrames.Count > 0 && fps > 30) Redirect(proc, fpsFrames, (uint)mem);
         if (On("pulse") && pulse != null && fps > 30) PatchPulse(proc, pulse, (uint)mem, (uint)mem + 0xB20);
         if (On("topple") && topple != null && fps > 30) PatchTopple(proc, topple, (uint)mem + 0xBA0);
@@ -327,7 +329,7 @@ static class Program
             (schedSite != null && schedSite.FfGlobal != 0 ? " | ffwd 0x" + schedSite.FfGlobal.ToString("X") + "+" + schedSite.FfOff.ToString("X") : "") +
             (held != null ? " | camerakeys " + hex(new[] { held.ZoomIn, held.ZoomOut, held.Rotate }) : "") +
             (trailLock != 0 ? " | traillock " + hex(new[] { trailLock }) : "") +
-            (sway != null ? " | sway " + hex(new[] { sway.Guard }) : "") +
+            (sway != null ? " | sway " + hex(new[] { sway.Guard }) : "") + (sway3 != null ? " | sway " + hex(new[] { sway3.Guard }) : "") +
             (stream != 0 ? " | stream " + hex(new[] { stream }) : "") +
             (audioSlot != 0 ? " | audio " + hex(new[] { audioSlot, audioFn }) : "") +
             (floatText != null ? " | floattext " + hex(new[] { floatText.Add, floatText.Update }) : "") +
@@ -2040,6 +2042,106 @@ static class Program
         Write(proc, s.Guard, g.ToArray());
         // je skip -> je cache stub
         Write(proc, s.Guard + 16, u(cacheStub - (s.Guard + 20)));
+    }
+
+    // tw/kw: the same vehicle sway as ra3 (#12), different code. the guard compares getFrame with the locomotor's
+    // +C0h and returns "no tilt" on a match, the four sway functions (cases 1-9) each make the drawable's 5Ch sway block
+    // at +22Ch. same fix: a 30hz frame in the guard, the block grows by 16 bytes for the last result, frames in between
+    // get that result. the guard's je is short, so the whole getFrame/cmp/je goes into a stub:
+    //   mov ecx,[client] / mov eax,[ecx] / push ebx / call [eax+78h] / mov ebx,eax / cmp [esi+C0h],ebx / je skip
+    const string Cnc3SwayPattern = "8B 0D ?? ?? ?? ?? 8B 01 53 FF 50 78 8B D8 39 9E ?? ?? 00 00 74 ?? 8B 8F ?? ?? 00 00 E8 ?? ?? ?? ?? 89 98 ?? ?? 00 00 8B 46 04 8B 40 04 8B 40";
+
+    class Cnc3SwaySite { public uint Guard, Skip, Client, FrameOff, BlockOff, Size, Alloc; public List<uint> Calls = new List<uint>(), AllocSites = new List<uint>(); }
+
+    static Cnc3SwaySite FindCnc3Sway(byte[] img)
+    {
+        uint m = FindUnique(img, Cnc3SwayPattern);
+        if (m == 0) return null;
+        int o = (int)(m - ImageBase), end = TextEnd(img);
+        var s = new Cnc3SwaySite { Guard = m, Client = BitConverter.ToUInt32(img, o + 2), FrameOff = BitConverter.ToUInt32(img, o + 16), Skip = (uint)(m + 22 + (sbyte)img[o + 21]) };
+        // the stub writes the result flag [ebp-1] and reads the info pointer [ebp+8]: mov byte [ebp-1],0 must be set up before
+        bool flag = false;
+        for (int i = o - 0x30; i < o; i++) if (img[i] == 0xC6 && img[i + 1] == 0x45 && img[i + 2] == 0xFF && img[i + 3] == 0x00) flag = true;
+        if (!flag || s.Skip - (m + 8) > 127) return null;
+        // the case blocks: push [ebp+8] / mov ecx,edi / push esi / call sway function
+        for (int i = o + 0x25; i < o + 0xA0; i++)
+            if (img[i] == 0xFF && img[i + 1] == 0x75 && img[i + 2] == 0x08 && img[i + 3] == 0x8B && img[i + 4] == 0xCF && img[i + 5] == 0x56 && img[i + 6] == 0xE8) s.Calls.Add(ImageBase + (uint)i + 6);
+        if (s.Calls.Count != 4) return null;
+        // each starts: cmp [reg+block],0 (or ,edi) / jne / push size / call alloc / ... / call ctor / ... / mov [reg+block],eax
+        uint ctor = 0;
+        foreach (uint c in s.Calls)
+        {
+            int fo = (int)(CallTarget(img, c) - ImageBase), p = -1;
+            for (int i = fo; i < fo + 0x20 && p < 0; i++)
+                if (img[i] == 0x75 && img[i + 2] == 0x6A && img[i + 4] == 0xE8) p = i + 2;
+            if (p < 0) return null;
+            uint size = img[p + 1], alloc = CallTarget(img, ImageBase + (uint)p + 2), ct = 0, block = 0;
+            for (int i = p + 7; i < p + 24 && ct == 0; i++) if (img[i] == 0xE8) ct = CallTarget(img, ImageBase + (uint)i);
+            for (int i = p + 7; i < p + 40 && block == 0; i++) if (img[i] == 0x89 && (img[i + 1] == 0x83 || img[i + 1] == 0x86) && BitConverter.ToUInt32(img, i + 2) < 0x1000) block = BitConverter.ToUInt32(img, i + 2);
+            if (ct == 0 || block == 0 || (s.Size != 0 && (size != s.Size || alloc != s.Alloc || ct != ctor || block != s.BlockOff))) return null;
+            s.Size = size; s.Alloc = alloc; ctor = ct; s.BlockOff = block;
+        }
+        // every sway block made anywhere (the four functions + savegame load) gets the bigger size
+        int ctorCalls = 0;
+        for (int i = 0x1000; i < end - 5; i++)
+        {
+            if (img[i] != 0xE8 || CallTarget(img, ImageBase + (uint)i) != ctor) continue;
+            ctorCalls++;
+            for (int j = i - 4; j > i - 24; j--)
+                if (img[j] == 0x6A && img[j + 1] == s.Size && img[j + 2] == 0xE8 && CallTarget(img, ImageBase + (uint)j + 2) == s.Alloc) { s.AllocSites.Add(ImageBase + (uint)j + 2); break; }
+        }
+        return ctorCalls == s.AllocSites.Count && ctorCalls >= 4 ? s : null;
+    }
+
+    static void PatchCnc3Sway(IntPtr proc, byte[] img, Cnc3SwaySite s, uint fpsVa, uint mem)
+    {
+        Func<uint, byte[]> u = BitConverter.GetBytes;
+        uint guardStub = mem, allocStub = mem + 0x60, thunks = mem + 0xA0;   // up to +1A0h
+        // ebx = ceil(getFrame() * 30 / fps), ZF set when this 30hz frame already stepped (then the kept result goes into
+        // the caller's info and the "tilt written" flag is set)
+        var g = new Asm(guardStub);
+        g.E(0x8B, 0x0D); g.D(s.Client); g.E(0x8B, 0x01, 0xFF, 0x50, 0x78);           // mov ecx,[client] / mov eax,[ecx] / call [eax+78h]
+        g.E(0x6B, 0xC0, 0x1E, 0x8B, 0x15); g.D(fpsVa);                               // imul eax,eax,30 / mov edx,[fps]
+        g.E(0x8D, 0x44, 0x10, 0xFF, 0x33, 0xD2, 0xF7, 0x35); g.D(fpsVa);             // lea eax,[eax+edx-1] / xor edx,edx / div [fps]
+        g.E(0x8B, 0xD8, 0x39, 0x9E); g.D(s.FrameOff); g.J(0x75, "done");             // mov ebx,eax / cmp [esi+frame],ebx / jne done
+        g.E(0x8B, 0x87); g.D(s.BlockOff); g.E(0x85, 0xC0); g.J(0x74, "same");        // mov eax,[edi+block] / test / jz same
+        g.E(0x8B, 0x4D, 0x08);                                                       // mov ecx,[ebp+8] (info)
+        for (byte k = 0; k < 16; k += 4) g.E(0x8B, 0x50, (byte)(s.Size + k), 0x89, 0x51, k);   // mov edx,[eax+size+k] / mov [ecx+k],edx
+        g.E(0xC6, 0x45, 0xFF, 0x01);                                                 // mov byte [ebp-1],1
+        g.L("same"); g.E(0x3B, 0xDB);                                                // cmp ebx,ebx (ZF=1)
+        g.L("done"); g.E(0xC3);
+        Write(proc, guardStub, g.Done(0x60));
+        // alloc(size) -> alloc(size+16), our 16 bytes start zeroed (the caller cleans its own push)
+        var a = new Asm(allocStub);
+        a.E(0x68); a.D(s.Size + 16); a.Rel(0xE8, s.Alloc); a.E(0x83, 0xC4, 0x04, 0x85, 0xC0); a.J(0x74, "null");
+        for (byte k = 0; k < 16; k += 4) a.E(0xC7, 0x40, (byte)(s.Size + k), 0, 0, 0, 0);
+        a.L("null"); a.E(0xC3);
+        Write(proc, allocStub, a.Done(0x40));
+        // sway function, then keep its result in the block: push ebx / mov ebx,ecx / push info / push loco / call / copy / pop ebx / ret 8
+        var done = new Dictionary<uint, uint>();
+        foreach (uint site in s.Calls)
+        {
+            uint target = CallTarget(img, site), t;
+            if (!done.TryGetValue(target, out t))
+            {
+                t = thunks + (uint)done.Count * 0x40;
+                var th = new Asm(t);
+                th.E(0x53, 0x8B, 0xD9, 0xFF, 0x74, 0x24, 0x0C, 0xFF, 0x74, 0x24, 0x0C);
+                th.Rel(0xE8, target);
+                th.E(0x8B, 0x44, 0x24, 0x0C, 0x8B, 0x8B); th.D(s.BlockOff); th.E(0x85, 0xC9); th.J(0x74, "out");
+                for (byte k = 0; k < 16; k += 4) th.E(0x8B, 0x50, k, 0x89, 0x51, (byte)(s.Size + k));
+                th.L("out"); th.E(0x5B, 0xC2, 0x08, 0x00);
+                Write(proc, t, th.Done(0x40));
+                done[target] = t;
+            }
+            Write(proc, site + 1, u(t - (site + 5)));
+        }
+        foreach (uint site in s.AllocSites) Write(proc, site + 1, u(allocStub - (site + 5)));
+        // guard: push ebx / call stub / je skip / nop x14 (22 bytes)
+        var p = new List<byte> { 0x53, 0xE8 }; p.AddRange(u(guardStub - (s.Guard + 6)));
+        p.Add(0x74); p.Add((byte)(s.Skip - (s.Guard + 8)));
+        while (p.Count < 22) p.Add(0x90);
+        Write(proc, s.Guard, p.ToArray());
     }
 
     // ---- bfme2 ----
