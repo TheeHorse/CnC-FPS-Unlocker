@@ -28,6 +28,7 @@ static class Program
     }
 
     static uint realClockFn;   // set by PatchScheduler when the effects real clock is on
+    static uint newTickFlag, modeCheckFn;   // batches: the "new tick?" flag and the engine function that now returns it
     static bool realclockOpt;
 
     // crcdump=1 (ra3 1.12, desync hunting): the game's own deep CRC switch. if the game goes out of sync it then writes
@@ -204,6 +205,7 @@ static class Program
     // proc isn't used, it's always our own process (kept so the patch functions read the same as before)
     static List<uint> ApplyPatches(IntPtr proc, byte[] img, int fps, float zoom, bool throttlePfx, string extra, bool ticks)
     {
+        newTickFlag = 0; modeCheckFn = 0;
         uint render = FindRenderFps(img);
         List<uint> sites = FindPacingSites(img, render, render - 4);
         sites.AddRange(SelectSites(FindExtraSites(img, render, render - 4, sites), extra));
@@ -256,13 +258,28 @@ static class Program
             List<uint> ratio = sites.Where(s => IsPhaseRatioSite(img, s)).ToList();
             int logicFps = BitConverter.ToInt32(img, (int)(render - 4 - ImageBase));
             if (logicFps <= 0 || logicFps > 30) logicFps = 15;
-            // only the dispatcher's read gets the stock ratio. the other one is the engine's "high fps mode?" function (its
-            // fps read is the first instruction): drawing and the frame loop ask it whether to interpolate, so it keeps
-            // saying yes or movement goes back to stock's two steps per tick
+            // only the dispatcher's read gets the stock ratio. the other one starts the engine's "did a new tick just run?"
+            // function (its fps read is the first instruction): ratio < 6 -> phase == 6 / ratio, else phase == 1. the
+            // drawable loop copies object state into drawables only when it says yes, the net speed regulator and a
+            // cleanup pass run on it too. with batches the phase is never 1 when anyone asks (1-3 run in one call), so
+            // forcing the high-fps branch made it always no (1.9.4: units drawn stale or not at all, enemies seen in fog,
+            // late units). batches: it says yes from the frame a tick starts until the next engine update, once per
+            // tick like stock at 30 fps (flag set by the scheduler's exit stub)
             List<uint> modeCheck = ratio.Where(s => img[(int)(s - 2 - ImageBase)] == 0xCC).ToList();
             Write(proc, (uint)mem + 0x90, BitConverter.GetBytes(Math.Max(fps, 90)));
             Write(proc, (uint)mem + 0x94, BitConverter.GetBytes(On("batches") ? 2 * logicFps : Math.Max(fps, 90)));
-            Redirect(proc, modeCheck, (uint)mem + 0x90);
+            if (On("batches") && On("schedinterp") && On("newtick") && modeCheck.Count == 1 && img[(int)(modeCheck[0] - 1 - ImageBase)] == 0xA1)
+            {
+                newTickFlag = (uint)mem + 0x1180;
+                var nt = new Asm((uint)mem + 0x1140);
+                nt.E(0x33, 0xC0, 0xA0); nt.D(newTickFlag); nt.E(0xC3);   // xor eax,eax / mov al,[flag] / ret
+                Write(proc, (uint)mem + 0x1140, nt.Done(0x40));
+                Write(proc, newTickFlag, new byte[4]);
+                uint fn = modeCheck[0] - 1;
+                Write(proc, fn, new byte[] { 0xE9 }.Concat(BitConverter.GetBytes((uint)mem + 0x1140 - (fn + 5))).ToArray());
+                modeCheckFn = fn;
+            }
+            else Redirect(proc, modeCheck, (uint)mem + 0x90);
             Redirect(proc, ratio.Except(modeCheck).ToList(), (uint)mem + 0x94);
             Redirect(proc, sites.Except(ratio).ToList(), (uint)mem);
         }
@@ -301,6 +318,7 @@ static class Program
             " | limiter " + hex(new[] { limiter }) + " | scroll " + hex(new[] { scrollSlot }) + " | zoom " + hex(new[] { zoomSite }) +
             " | interp " + hex(interpWindow) + " | models " + hex(new[] { modelStep }) + " | particles " + hex(new[] { pfxSite }) +
             (schedSite != null ? " | sched " + hex(new[] { schedSite.Advance, schedSite.Exit }) : "") +
+            (modeCheckFn != 0 ? " | newtick " + hex(new[] { modeCheckFn }) : "") +
             (held != null ? " | camerakeys " + hex(new[] { held.ZoomIn, held.ZoomOut, held.Rotate }) : "") +
             (trailLock != 0 ? " | traillock " + hex(new[] { trailLock }) : "") +
             (sway != null ? " | sway " + hex(new[] { sway.Guard }) : "") +
@@ -1153,6 +1171,7 @@ static class Program
         // stub A: replaces mov ecx,[esi+phase] / cmp ecx,6
         var a = new Asm(stubA);
         a.E(0x89, 0x35); a.D(eng);                                   // mov [engine],esi
+        if (newTickFlag != 0) { a.E(0xC6, 0x05); a.D(newTickFlag); a.E(0x00); }   // mov byte [newtick],0: a new engine update
         a.E(0x50, 0x52, 0x51);                                       // push eax / push edx / push ecx
         a.E(0xA1); a.D(fpsVa); a.E(0x33, 0xD2, 0xB9, 0x0F, 0, 0, 0, 0xF7, 0xF1); a.E(0xA3); a.D(r);   // r = fps / 15
         a.Rel(0xE8, site.TimeFn);                                   // eax = ms (timeGetTime)
@@ -1231,6 +1250,14 @@ static class Program
         // interp = (now - tickStart + frame length) / 200, max 1
         var b = new Asm(stubB);
         b.E(0x50, 0x52, 0x51);
+        if (newTickFlag != 0)
+        {
+            // a tick started this frame (stub A passed it on) and its first batch ran: phase 6 / 2 = 3. held back by the network -> 7
+            b.E(0x83, 0x3D); b.D(pend); b.E(0x01); b.J(0x75, "nonew");
+            b.E(0x83, 0x7E, ph, 0x03); b.J(0x75, "nonew");
+            b.E(0xC6, 0x05); b.D(newTickFlag); b.E(0x01);
+            b.L("nonew");
+        }
         b.E(0xA1); b.D(now3); b.E(0x8B, 0xD0, 0x2B, 0x15); b.D(prevNow);   // edx = frame length
         b.E(0xA3); b.D(prevNow);
         b.E(0x85, 0xD2); b.J(0x7D, "dpos"); b.E(0x33, 0xD2);
