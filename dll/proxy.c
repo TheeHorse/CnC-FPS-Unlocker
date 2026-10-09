@@ -85,7 +85,7 @@ static char *put_hex(char *p, DWORD v)
     return p;
 }
 
-/* why the fixes didn't load. most likely on linux: proton has no .net framework */
+/* why the fixes didn't load (on windows usually .net 4 missing) */
 static void load_failed(const char *step, int dotnet)
 {
     char text[512];
@@ -93,8 +93,8 @@ static void load_failed(const char *step, int dotnet)
     lstrcatA(text, step);
     lstrcatA(text, "). The game runs without the fixes.\r\n");
     if (dotnet)
-        lstrcatA(text, "It needs .NET Framework 4. On Linux (Proton/Wine) install it into the game's prefix, "
-                       "e.g. protontricks <appid> dotnet48, see the README.\r\n");
+        lstrcatA(text, "It needs .NET Framework 4 (on Linux, Proton's own wine-mono is enough). "
+                       "Please post this log on GitHub.\r\n");
     log_line(text, 0);
 }
 
@@ -157,9 +157,9 @@ static void run_patches(void)
     if (((GetInterfaceFn)info->vt[9])(info, &CLSID_CLRRuntimeHost, &IID_ICLRRuntimeHost, (void **)&host) < 0) { load_failed("couldn't get the .NET runtime", 1); return; }
     if (((StartFn)host->vt[3])(host) < 0) { load_failed("couldn't start .NET", 1); return; }
     {
-        /* the code says why: 80070002 file not found, 80131040 version mismatch, 80004001 not implemented (wine-mono
-           instead of the real .net 4.8), 80131604 an exception inside CnCFpsUnlocker.dll */
-        HRESULT hr = ((ExecFn)host->vt[11])(host, assembly, L"DllEntry", L"Run", dll_dir, &ret);
+        /* the code says why: 80070002 file not found, 80131040 version mismatch, 80070057 bad type name (wine-mono
+           wants Namespace.Class), 80131604 an exception inside CnCFpsUnlocker.dll */
+        HRESULT hr = ((ExecFn)host->vt[11])(host, assembly, L"SAGEUnlocked.DllEntry", L"Run", dll_dir, &ret);
         if (hr < 0)
         {
             char step[64] = "couldn't call into CnCFpsUnlocker.dll, error 00000000";

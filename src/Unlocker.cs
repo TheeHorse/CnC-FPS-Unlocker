@@ -2447,3 +2447,13 @@ public static class DllEntry
     // RA3HighFps.exe calls this by reflection (linux)
     public static int Launch(IntPtr proc, string exe, string dir) { return Program.Launch(proc, exe, dir); }
 }
+
+// what the drop-in dll calls since 1.9.6. wine-mono's ExecuteInDefaultAppDomain needs a namespace in the type
+// name (no dot = E_INVALIDARG, 80070057), so plain "DllEntry" never ran under proton. real .net takes either
+namespace SAGEUnlocked
+{
+    public static class DllEntry
+    {
+        public static int Run(string dir) { return Program.InProcess(dir); }
+    }
+}
