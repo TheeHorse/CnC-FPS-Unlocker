@@ -233,6 +233,7 @@ static class Program
         List<uint> fpsFrames = FindFpsFrameReads(img, render, sites);
         RadarFade radarFade = FindRadarFade(img);
         List<uint> drawFade = FindDrawableFadeFps(img, render);
+        List<uint> elapsed = FindElapsedSites(img);
         // the radar fade runs on the 30hz frame with the stock 30 fps hold, so its hold reads stay at 30
         if (radarFade != null && On("radarfade")) fpsFrames.RemoveAll(a => a >= radarFade.Fn && a < radarFade.Fn + 0x80);
         Blinks blinks = FindBlinks(img);
@@ -248,7 +249,7 @@ static class Program
             new { n = "anim2d", ok = anim2d.Count > 0 }, new { n = "models", ok = modelStep != 0 }, new { n = "particles", ok = pfxSite != 0 },
             new { n = "fades", ok = fades.Count > 0 || fx.Fades.Count > 0 }, new { n = "zoom", ok = zoomSite != 0 },
             new { n = "camsteps", ok = fx.CameraStep != 0 }, new { n = "fxframes", ok = fx.Frame5.Count > 0 }, new { n = "throb", ok = fx.Throb != 0 },
-            new { n = "shake", ok = fx.Shake != 0 }, new { n = "traillock", ok = trailLock != 0 }, new { n = "sway", ok = sway != null || sway3 != null }, new { n = "stream", ok = stream != 0 }, new { n = "audio", ok = audioSlot != 0 }, new { n = "floattext", ok = floatText != null }, new { n = "fpsframes", ok = fpsFrames.Count > 0 }, new { n = "blinks", ok = blinks.Sites.Count > 0 }, new { n = "tint", ok = blinks.Tint.Count > 0 }, new { n = "modeltimer", ok = blinks.TimerUpdate != 0 }, new { n = "radarfade", ok = radarFade != null }, new { n = "drawfade", ok = drawFade.Count > 0 }, new { n = "pulse", ok = pulse != null }, new { n = "turrets", ok = turretSite != null }, new { n = "topple", ok = topple != null }, new { n = "offscreenanim", ok = animGate != 0 } };
+            new { n = "shake", ok = fx.Shake != 0 }, new { n = "traillock", ok = trailLock != 0 }, new { n = "sway", ok = sway != null || sway3 != null }, new { n = "stream", ok = stream != 0 }, new { n = "audio", ok = audioSlot != 0 }, new { n = "floattext", ok = floatText != null }, new { n = "fpsframes", ok = fpsFrames.Count > 0 }, new { n = "blinks", ok = blinks.Sites.Count > 0 }, new { n = "tint", ok = blinks.Tint.Count > 0 }, new { n = "modeltimer", ok = blinks.TimerUpdate != 0 }, new { n = "radarfade", ok = radarFade != null }, new { n = "drawfade", ok = drawFade.Count > 0 }, new { n = "fxdelays", ok = elapsed.Count > 0 }, new { n = "pulse", ok = pulse != null }, new { n = "turrets", ok = turretSite != null }, new { n = "topple", ok = topple != null }, new { n = "offscreenanim", ok = animGate != 0 } };
         found = "found: " + string.Join(" ", have.Where(h => h.ok).Select(h => h.n)) + " | missing: " + string.Join(" ", have.Where(h => !h.ok).Select(h => h.n));
 
         // +0 fps, +8 particle accum, +40 stubs. the first page is full, newer things go in the second (+1000 and up)
@@ -316,6 +317,7 @@ static class Program
         if (On("audio") && audioSlot != 0 && fps > 30) PatchAudioUpdate(proc, audioSlot, audioFn, fps, (uint)mem, (uint)mem + 0x11C0, (uint)mem + 0x1200);
         if (On("floattext") && floatText != null && fps > 30) PatchFloatingText(proc, floatText, (uint)mem, (uint)mem + 0x1240);
         if (On("drawfade") && drawFade.Count > 0 && fps > 30) Redirect(proc, drawFade, (uint)mem);
+        if (On("fxdelays") && elapsed.Count > 0 && fps > 30) PatchElapsedSites(proc, img, elapsed, (uint)mem, (uint)mem + 0x1500);   // +1500h..+1560h
         if (On("radarfade") && radarFade != null && fps > 30) PatchRadarFade(proc, radarFade, (uint)mem, (uint)mem + 0x14A0);   // +14A0h..+1500h
         if (On("models") && modelStep != 0) Redirect(proc, new List<uint> { modelStep }, (uint)mem + 0x10);   // 1/fps instead of 1/30
         if (On("particles") && throttlePfx && pfxSite != 0)
@@ -339,7 +341,7 @@ static class Program
             (stream != 0 ? " | stream " + hex(new[] { stream }) : "") +
             (audioSlot != 0 ? " | audio " + hex(new[] { audioSlot, audioFn }) : "") +
             (floatText != null ? " | floattext " + hex(new[] { floatText.Add, floatText.Update }) : "") +
-            (fpsFrames.Count > 0 ? " | fpsframes " + hex(fpsFrames) : "") + (radarFade != null ? " | radarfade " + hex(new[] { radarFade.Call, radarFade.Site }) : "") + (drawFade.Count > 0 ? " | drawfade " + hex(drawFade) : "") +
+            (fpsFrames.Count > 0 ? " | fpsframes " + hex(fpsFrames) : "") + (radarFade != null ? " | radarfade " + hex(new[] { radarFade.Call, radarFade.Site }) : "") + (drawFade.Count > 0 ? " | drawfade " + hex(drawFade) : "") + (elapsed.Count > 0 ? " | fxdelays " + hex(elapsed) : "") +
             (blinks.Sites.Count > 0 ? " | blinks " + hex(blinks.Sites) : "") +
             (blinks.Tint.Count > 0 ? " | tint " + hex(blinks.Tint.Concat(new[] { blinks.TintInstall9 }).Concat(blinks.TintLen)) : "") +
             (blinks.TimerUpdate != 0 ? " | modeltimer " + hex(new[] { blinks.TimerInit, blinks.TimerUpdate }) : "") +
@@ -1848,6 +1850,47 @@ static class Program
         Write(proc, p.Call + 1, BitConverter.GetBytes(stubVa - (p.Call + 5)));
         // mov edx,[ecx] / mov eax,[edx+74h] / call eax -> call frameStub / nop / nop
         Write(proc, p.Sine, new byte[] { 0xE8 }.Concat(BitConverter.GetBytes(frameStub - (p.Sine + 5))).Concat(new byte[] { 0x90, 0x90 }).ToArray());
+    }
+
+    // effect timers with lengths from the game data (a random min..max in 30 fps frames, made with frames per ms 0.03)
+    // that are checked against getFrame - start, in drawn frames: a delay before something attached appears, a delayed
+    // step, ribbon/trail segment ages. all ended a quarter of the way through at 120. the elapsed count goes through a
+    // stub that turns it into 30 fps frames: [original sub] / elapsed * 30 / fps / [original cmp or mov+test] / ret.
+    // pattern, offset of the sub, bytes replaced (sub + the rest), ra3 and tw/kw forms
+    static readonly string[][] ElapsedSites = {
+        new[] { "8B 7E 04 FF D2 2B 47 2C 3B 46 10 72", "5", "6" },          // ra3: delay before the attached thing starts
+        new[] { "8B 7E 04 FF 50 78 2B 47 2C 3B 46 10 72", "6", "6" },       // tw/kw
+        new[] { "8B 42 74 FF D0 2B C5 3B 46 0C 72", "5", "5" },             // ra3: delayed step
+        new[] { "8B 01 FF 50 78 2B C7 3B 46 14", "5", "5" },                // tw/kw
+        new[] { "8B 42 74 FF D0 2B C6 8B C8 85 C9 89 4C 24", "5", "6" },    // ra3: ribbon segment age
+        new[] { "8B 58 2C 8B 01 FF 50 78 2B C3 8B C8 85 C9", "8", "6" } };  // tw/kw
+
+    static List<uint> FindElapsedSites(byte[] img)
+    {
+        var l = new List<uint>();
+        foreach (var s in ElapsedSites) { uint m = FindUnique(img, s[0]); if (m != 0) l.Add(m + uint.Parse(s[1])); }
+        return l;
+    }
+
+    static void PatchElapsedSites(IntPtr proc, byte[] img, List<uint> sites, uint fpsVa, uint stubVa)
+    {
+        foreach (uint site in sites)
+        {
+            int o = (int)(site - ImageBase);
+            int subLen = (img[o + 1] & 0xC0) == 0xC0 ? 2 : 3;   // sub eax,reg / sub eax,[reg+disp8]
+            int total = 0;
+            foreach (var s in ElapsedSites) { uint m = FindUnique(img, s[0]); if (m + uint.Parse(s[1]) == site) total = int.Parse(s[2]); }
+            var a = new Asm(stubVa);
+            for (int i = 0; i < subLen; i++) a.E(img[o + i]);
+            a.E(0x52, 0x6B, 0xC0, 0x1E, 0x33, 0xD2, 0xF7, 0x35); a.D(fpsVa); a.E(0x5A);   // push edx / imul eax,eax,30 / xor edx,edx / div [fps] / pop edx
+            for (int i = subLen; i < total; i++) a.E(img[o + i]);
+            a.E(0xC3);
+            Write(proc, stubVa, a.Done(0x20));
+            var p = new List<byte> { 0xE8 }; p.AddRange(BitConverter.GetBytes(stubVa - (site + 5)));
+            while (p.Count < total) p.Add(0x90);
+            Write(proc, site, p.ToArray());
+            stubVa += 0x20;
+        }
     }
 
     // tw/kw drawable fade/blend (0x4809DB in tw 1.10): runs once per drawn frame (it also steps a phase by the real
