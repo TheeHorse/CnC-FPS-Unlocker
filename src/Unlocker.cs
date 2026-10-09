@@ -228,6 +228,8 @@ static class Program
         uint trailLock = FindTrailLock(img);
         SwaySite sway = FindSway(img);
         uint stream = FindStreamUpdate(img);
+        uint audioFn, audioSlot = FindAudioUpdateSlot(img, out audioFn);
+        FloatTextSites floatText = FindFloatingText(img);
         List<uint> fpsFrames = FindFpsFrameReads(img, render, sites);
         Blinks blinks = FindBlinks(img);
         PulseSite pulse = FindPulse(img);
@@ -242,7 +244,7 @@ static class Program
             new { n = "anim2d", ok = anim2d.Count > 0 }, new { n = "models", ok = modelStep != 0 }, new { n = "particles", ok = pfxSite != 0 },
             new { n = "fades", ok = fades.Count > 0 || fx.Fades.Count > 0 }, new { n = "zoom", ok = zoomSite != 0 },
             new { n = "camsteps", ok = fx.CameraStep != 0 }, new { n = "fxframes", ok = fx.Frame5.Count > 0 }, new { n = "throb", ok = fx.Throb != 0 },
-            new { n = "shake", ok = fx.Shake != 0 }, new { n = "traillock", ok = trailLock != 0 }, new { n = "sway", ok = sway != null }, new { n = "stream", ok = stream != 0 }, new { n = "fpsframes", ok = fpsFrames.Count > 0 }, new { n = "blinks", ok = blinks.Sites.Count > 0 }, new { n = "tint", ok = blinks.Tint.Count > 0 }, new { n = "modeltimer", ok = blinks.TimerUpdate != 0 }, new { n = "pulse", ok = pulse != null }, new { n = "turrets", ok = turretSite != null }, new { n = "topple", ok = topple != null }, new { n = "offscreenanim", ok = animGate != 0 } };
+            new { n = "shake", ok = fx.Shake != 0 }, new { n = "traillock", ok = trailLock != 0 }, new { n = "sway", ok = sway != null }, new { n = "stream", ok = stream != 0 }, new { n = "audio", ok = audioSlot != 0 }, new { n = "floattext", ok = floatText != null }, new { n = "fpsframes", ok = fpsFrames.Count > 0 }, new { n = "blinks", ok = blinks.Sites.Count > 0 }, new { n = "tint", ok = blinks.Tint.Count > 0 }, new { n = "modeltimer", ok = blinks.TimerUpdate != 0 }, new { n = "pulse", ok = pulse != null }, new { n = "turrets", ok = turretSite != null }, new { n = "topple", ok = topple != null }, new { n = "offscreenanim", ok = animGate != 0 } };
         found = "found: " + string.Join(" ", have.Where(h => h.ok).Select(h => h.n)) + " | missing: " + string.Join(" ", have.Where(h => !h.ok).Select(h => h.n));
 
         // +0 fps, +8 particle accum, +40 stubs. the first page is full, newer things go in the second (+1000 and up)
@@ -306,6 +308,8 @@ static class Program
         if (On("turrets") && turretSite != null && sched && fps > 30) PatchTurretInterp(proc, img, turretSite, schedSite, (uint)mem + 0xB80, (uint)mem + 0xD48, On("batches"));
         if ((blinks.Sites.Count > 0 || blinks.Tint.Count > 0 || blinks.TimerUpdate != 0) && fps > 30) PatchBlinks(proc, blinks, (uint)mem, (uint)mem + 0xB00);
         if (On("stream") && stream != 0 && fps > 30) PatchStreamUpdate(proc, img, stream, (uint)mem, (uint)mem + 0x1100);
+        if (On("audio") && audioSlot != 0 && fps > 30) PatchAudioUpdate(proc, audioSlot, audioFn, fps, (uint)mem, (uint)mem + 0x11C0, (uint)mem + 0x1200);
+        if (On("floattext") && floatText != null && fps > 30) PatchFloatingText(proc, floatText, (uint)mem, (uint)mem + 0x1240);
         if (On("models") && modelStep != 0) Redirect(proc, new List<uint> { modelStep }, (uint)mem + 0x10);   // 1/fps instead of 1/30
         if (On("particles") && throttlePfx && pfxSite != 0)
             ThrottleParticles(proc, pfxSite, pfxSim, (uint)mem, (uint)mem + 8, (uint)mem + 0x40);
@@ -326,6 +330,8 @@ static class Program
             (trailLock != 0 ? " | traillock " + hex(new[] { trailLock }) : "") +
             (sway != null ? " | sway " + hex(new[] { sway.Guard }) : "") +
             (stream != 0 ? " | stream " + hex(new[] { stream }) : "") +
+            (audioSlot != 0 ? " | audio " + hex(new[] { audioSlot, audioFn }) : "") +
+            (floatText != null ? " | floattext " + hex(new[] { floatText.Add, floatText.Update }) : "") +
             (fpsFrames.Count > 0 ? " | fpsframes " + hex(fpsFrames) : "") +
             (blinks.Sites.Count > 0 ? " | blinks " + hex(blinks.Sites) : "") +
             (blinks.Tint.Count > 0 ? " | tint " + hex(blinks.Tint) : "") +
@@ -1446,6 +1452,74 @@ static class Program
         Write(proc, stubVa, s.Done(0x40));
         var p = new List<byte> { 0xE8 }; p.AddRange(BitConverter.GetBytes(stubVa - (site + 5))); p.Add(0x90);
         Write(proc, site, p.ToArray());
+    }
+
+    // tw/kw (#25): floating text ("+$" over tiberium spikes, selling, harvesters...). add sets expire = getFrame() +
+    // framesPerMs (0.03, kept at 30 fps on purpose) * timeout ms, the update ages it once per new drawn frame and
+    // after expiry fades it by (frame - expire) * rate / frames per tick (2), the draw raises it by age * speed / 2.
+    // all of it counts drawn frames, so at 120 it lived a quarter as long and rose and faded 4x fast. both getFrame
+    // calls now get a 30 hz frame: the whole thing runs on stock's clock
+    class FloatTextSites { public uint Add, Update; }
+    static FloatTextSites FindFloatingText(byte[] img)
+    {
+        // update: mov esi,ecx / mov ecx,[client] / mov eax,[ecx] / push edi / call [eax+78h] / mov edi,eax / cmp [esi+0Ch],edi / je / mov [esi+0Ch],edi
+        uint u = FindUnique(img, "8B F1 8B 0D ?? ?? ?? ?? 8B 01 57 FF 50 78 8B F8 39 7E 0C 0F 84 ?? ?? ?? ?? 89 7E 0C");
+        // add: mov ecx,[client] / mov eax,[ecx] / fstp [ebp+8] / call [eax+78h] / test / mov [ebp+10h],eax / fild [ebp+10h]
+        uint a = FindUnique(img, "8B 0D ?? ?? ?? ?? 8B 01 D9 5D 08 FF 50 78 85 C0 89 45 10 DB 45 10");
+        if (u == 0 || a == 0) return null;
+        return new FloatTextSites { Update = u + 8, Add = a + 6 };
+    }
+
+    static void PatchFloatingText(IntPtr proc, FloatTextSites f, uint fpsVa, uint stubVa)
+    {
+        // eax = ceil(getFrame() * 30 / fps), ecx = client
+        var s = new Asm(stubVa);
+        s.E(0x8B, 0x01, 0xFF, 0x50, 0x78, 0x6B, 0xC0, 0x1E, 0x8B, 0x15); s.D(fpsVa);
+        s.E(0x8D, 0x44, 0x10, 0xFF, 0x33, 0xD2, 0xF7, 0x35); s.D(fpsVa); s.E(0xC3);
+        Write(proc, stubVa, s.Done(0x20));
+        // mov eax,[ecx] / push edi / call [eax+78h] -> push edi / call stub
+        Write(proc, f.Update, new byte[] { 0x57, 0xE8 }.Concat(BitConverter.GetBytes(stubVa - (f.Update + 6))).ToArray());
+        // mov eax,[ecx] / fstp [ebp+8] / call [eax+78h] -> fstp [ebp+8] / call stub
+        Write(proc, f.Add, new byte[] { 0xD9, 0x5D, 0x08, 0xE8 }.Concat(BitConverter.GetBytes(stubVa - (f.Add + 8))).ToArray());
+    }
+
+    // tw/kw (#24): the audio manager's per-frame update admits queued requests, counts Limit slots and clears finished
+    // sounds. run every drawn frame, Limit=1 one-shots like the money gain/spend tick get through 4x as often at 120
+    // (cnc3_fps_patch found this, same signature: a stable tail 12Ah into the function, its only pointer is vtable
+    // slot 5). the slot gets a stub that calls the real update 30 times a second (carried remainder, no drift).
+    // its millisecond delta reads the frame counter difference, so the skipped frames are counted when it runs
+    const string AudioUpdateTailPattern = "8B 8E 6C 02 00 00 E8 ?? ?? ?? ?? 8B 4E 30 3B CB 74 ?? F3 0F 2C 46 34 50 E8 ?? ?? ?? ?? 8B CE E8 ?? ?? ?? ?? " +
+        "8B CE E8 ?? ?? ?? ?? 8D 45 F8 50 8B CE E8 ?? ?? ?? ?? 8D 45 F8 50 8B CE E8 ?? ?? ?? ?? 8B CE E8 ?? ?? ?? ??";
+
+    static uint FindAudioUpdateSlot(byte[] img, out uint fn)
+    {
+        fn = 0;
+        uint tail = FindUnique(img, AudioUpdateTailPattern);
+        if (tail == 0) return 0;
+        uint f = tail - 0x12A;
+        int fo = (int)(f - ImageBase);
+        if (!(img[fo] == 0x55 && img[fo + 1] == 0x8B && img[fo + 2] == 0xEC && img[fo + 3] == 0xA1)) return 0;
+        // the one place outside the code that holds its address: the vtable slot
+        int end = TextEnd(img);
+        var slots = new List<uint>();
+        for (int i = end; i + 4 <= img.Length; i += 4) if (BitConverter.ToUInt32(img, i) == f) slots.Add(ImageBase + (uint)i);
+        if (slots.Count != 1) return 0;
+        fn = f;
+        return slots[0];
+    }
+
+    static void PatchAudioUpdate(IntPtr proc, uint slot, uint fn, int fps, uint fpsVa, uint accVa, uint stubVa)
+    {
+        // acc += 30; if (acc >= fps) { acc -= fps; jmp update } else return 0
+        Write(proc, accVa, BitConverter.GetBytes(fps - 30));   // first call runs it
+        var s = new Asm(stubVa);
+        s.E(0xA1); s.D(accVa); s.E(0x83, 0xC0, 0x1E);              // mov eax,[acc] / add eax,30
+        s.E(0x3B, 0x05); s.D(fpsVa); s.J(0x7C, "skip");            // cmp eax,[fps] / jl skip
+        s.E(0x2B, 0x05); s.D(fpsVa); s.E(0xA3); s.D(accVa);        // sub eax,[fps] / mov [acc],eax
+        s.Rel(0xE9, fn);                                           // jmp update
+        s.L("skip"); s.E(0xA3); s.D(accVa); s.E(0x33, 0xC0, 0xC3); // mov [acc],eax / xor eax,eax / ret
+        Write(proc, stubVa, s.Done(0x40));
+        Write(proc, slot, BitConverter.GetBytes(stubVa));
     }
 
     // tw/kw: StreamDraw::Stream (flamethrower etc, #21). its update runs every drawn frame and adds a new point
