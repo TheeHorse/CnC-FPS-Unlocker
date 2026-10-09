@@ -111,7 +111,6 @@ static class Program
             skip = (ReadIni(ini, "skip") ?? "").ToLowerInvariant();
             realclockOpt = ReadIni(ini, "realclock") == "1";   // effects on real time: opt-in until its crash is found
             offscreenAnim = ReadIni(ini, "offscreenanim") == "1";
-            tintOpt = ReadIni(ini, "tint") == "1";
             // bfme2: same engine family, its own code shapes (cdq/idiv), so its own path
             BfmeSites bfme = Scan(img, FrameMsSig).Count == 0 ? FindBfme(img) : null;
             if (bfme != null)
@@ -201,7 +200,6 @@ static class Program
     // ini skip=fades,interp,... turns single fixes off (for tracking down problems with mods)
     static string skip = "", found = "", patched = "";
     static bool offscreenAnim = false;   // ini offscreenanim=1: #13 experiment, off by default (didn't make off-screen shadows smooth)
-    static bool tintOpt = false;   // ini tint=1: the old 30 hz tint clock (#28: wrong, kept to compare)
     static bool On(string name) { return !skip.Split(',').Select(s => s.Trim()).Contains(name); }
 
     // proc isn't used, it's always our own process (kept so the patch functions read the same as before)
@@ -308,7 +306,7 @@ static class Program
         if (On("topple") && topple != null && fps > 30) PatchTopple(proc, topple, (uint)mem + 0xBA0);
         if (On("offscreenanim") && offscreenAnim && animGate != 0 && fps > 30) Write(proc, animGate, new byte[] { 0xEB });   // jne -> jmp
         if (On("turrets") && turretSite != null && sched && fps > 30) PatchTurretInterp(proc, img, turretSite, schedSite, (uint)mem + 0xB80, (uint)mem + 0xD48, On("batches"));
-        if ((blinks.Sites.Count > 0 || blinks.Tint.Count > 0 || blinks.TimerUpdate != 0) && fps > 30) PatchBlinks(proc, blinks, (uint)mem, (uint)mem + 0xB00);
+        if ((blinks.Sites.Count > 0 || blinks.Tint.Count > 0 || blinks.TimerUpdate != 0) && fps > 30) PatchBlinks(proc, blinks, (uint)mem, (uint)mem + 0xB00, (uint)mem + 0x1260);
         if (On("stream") && stream != 0 && fps > 30) PatchStreamUpdate(proc, img, stream, (uint)mem, (uint)mem + 0x1100);
         if (On("audio") && audioSlot != 0 && fps > 30) PatchAudioUpdate(proc, audioSlot, audioFn, fps, (uint)mem, (uint)mem + 0x11C0, (uint)mem + 0x1200);
         if (On("floattext") && floatText != null && fps > 30) PatchFloatingText(proc, floatText, (uint)mem, (uint)mem + 0x1240);
@@ -336,7 +334,7 @@ static class Program
             (floatText != null ? " | floattext " + hex(new[] { floatText.Add, floatText.Update }) : "") +
             (fpsFrames.Count > 0 ? " | fpsframes " + hex(fpsFrames) : "") +
             (blinks.Sites.Count > 0 ? " | blinks " + hex(blinks.Sites) : "") +
-            (tintOpt && blinks.Tint.Count > 0 ? " | tint " + hex(blinks.Tint) : "") +
+            (blinks.Tint.Count > 0 ? " | tint " + hex(blinks.Tint.Concat(blinks.TintLen)) : "") +
             (blinks.TimerUpdate != 0 ? " | modeltimer " + hex(new[] { blinks.TimerInit, blinks.TimerUpdate }) : "") +
             (pulse != null ? " | pulse " + hex(new[] { pulse.Call, pulse.Sine }) : "") +
             (turretSite != null ? " | turrets " + hex(new[] { turretSite.Site }) : "") +
@@ -1677,7 +1675,7 @@ static class Program
     // blinks keyed off the low bits of getFrame (drawn frames): tw/kw radar blips (frame & 4, ~4 hz) and a marker
     // drawn on odd frames (frame & 1) in all of them. at 240 they turn into a flicker / look solid, so those
     // calls get a 30hz frame
-    class Blinks { public byte Slot; public int Len; public uint TimerInit, TimerUpdate; public List<uint> Sites = new List<uint>(), Tint = new List<uint>(); }
+    class Blinks { public byte Slot; public int Len; public uint TimerInit, TimerUpdate; public List<uint> Sites = new List<uint>(), Tint = new List<uint>(), TintLen = new List<uint>(); }
 
     static Blinks FindBlinks(byte[] img)
     {
@@ -1691,6 +1689,30 @@ static class Program
         uint tins = FindUnique(img, "8B 0D ?? ?? ?? ?? 8B 01 FF 50 78 39 46 3C 76");
         uint tply = FindUnique(img, "8B 0D ?? ?? ?? ?? 8B 01 FF 50 78 83 65 F0 00 8B D8");
         if (tset != 0 && tins != 0 && tply != 0) b.Tint.AddRange(new[] { tset + 12, tins + 6, tply + 6 });
+        // some callers set those lengths as seconds * the client fps float (fps as a float, built at startup from the fps
+        // we redirect, so it holds the real fps): those come out in drawn frames, 4x too long for the 30 hz clock (#28, nod
+        // hub lines fading in slowly). others pass 30 fps frames (turrets) and need that clock. so the fps float reads
+        // shortly before a call to set (fld / fmul [float]) get a 30.0 instead: every length is in 30 fps frames
+        if (b.Tint.Count > 0)
+        {
+            uint render = FindRenderFps(img), fpsFloat = 0;
+            foreach (uint m in FindAll(img, "51 A1 ?? ?? ?? ?? DB 05 ?? ?? ?? ?? 85 C0 7D 06 D8 05 ?? ?? ?? ?? D9 1D ?? ?? ?? ?? 59 C3"))
+            {
+                int o = (int)(m - ImageBase);
+                if (BitConverter.ToUInt32(img, o + 2) == render && BitConverter.ToUInt32(img, o + 8) == render) fpsFloat = fpsFloat == 0 ? BitConverter.ToUInt32(img, o + 24) : uint.MaxValue;
+            }
+            if (fpsFloat != 0 && fpsFloat != uint.MaxValue)
+            {
+                int end = TextEnd(img);
+                for (int i = 0x1000; i < end - 5; i++)
+                {
+                    if (img[i] != 0xE8 || CallTarget(img, ImageBase + (uint)i) != tset) continue;
+                    for (int k = i - 0x90; k < i; k++)
+                        if ((img[k] == 0xD9 && img[k + 1] == 0x05 || img[k] == 0xD8 && img[k + 1] == 0x0D) && BitConverter.ToUInt32(img, k + 2) == fpsFloat && !b.TintLen.Contains(ImageBase + (uint)k + 2))
+                            b.TintLen.Add(ImageBase + (uint)k + 2);
+                }
+            }
+        }
         // tw/kw model timer: init stamps [esi+off] = getFrame, update adds getFrame - stamp to a progress capped at a
         // duration in 30 fps frames. both get the 30hz frame (the init's add esp,10h sits inside the call)
         uint tup = FindUnique(img, "8B 0D ?? ?? ?? ?? 8B 01 FF 50 78 8B D0 8D 8B ?? ?? 00 00 2B 11");
@@ -1708,7 +1730,7 @@ static class Program
         return b;
     }
 
-    static void PatchBlinks(IntPtr proc, Blinks b, uint fpsVa, uint stubVa)
+    static void PatchBlinks(IntPtr proc, Blinks b, uint fpsVa, uint stubVa, uint thirtyVa)
     {
         // eax = getFrame() * 30 / fps
         var s = new Asm(stubVa);
@@ -1726,15 +1748,20 @@ static class Program
             // mov eax,[ecx] / add esp,10h / call [eax+78h] -> add esp,10h / call stub
             Write(proc, b.TimerInit, new byte[] { 0x83, 0xC4, 0x10, 0xE8 }.Concat(BitConverter.GetBytes(stubVa - (b.TimerInit + 8))).ToArray());
         }
-        // off unless tint=1 (#28): every tint envelope caller sets its lengths as seconds * the client fps float, which
-        // starts from the fps we redirect, so they are already in real drawn frames and the stock clock was right. a 30 hz
-        // clock under them made every tint fade fps / 30 times slow (nod hub lines fading in for seconds at 240)
-        if (tintOpt && On("tint"))
+        if (On("tint"))
+        {
             foreach (uint site in b.Tint)
             {
                 var p = new List<byte> { 0xE8 }; p.AddRange(BitConverter.GetBytes(stubVa - (site + 5)));
                 Write(proc, site, p.ToArray());
             }
+            // callers that size the envelope with the fps float read 30.0 (#28)
+            if (On("tintlen") && b.TintLen.Count > 0)
+            {
+                Write(proc, thirtyVa, BitConverter.GetBytes(30f));
+                Redirect(proc, b.TintLen, thirtyVa);
+            }
+        }
     }
 
     // ra3/uprising: a drawable pulse (sine on getFrame % period, two counters -1 per call) that the drawable update
