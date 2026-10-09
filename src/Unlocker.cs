@@ -111,6 +111,7 @@ static class Program
             skip = (ReadIni(ini, "skip") ?? "").ToLowerInvariant();
             realclockOpt = ReadIni(ini, "realclock") == "1";   // effects on real time: opt-in until its crash is found
             offscreenAnim = ReadIni(ini, "offscreenanim") == "1";
+            tintOpt = ReadIni(ini, "tint") == "1";
             // bfme2: same engine family, its own code shapes (cdq/idiv), so its own path
             BfmeSites bfme = Scan(img, FrameMsSig).Count == 0 ? FindBfme(img) : null;
             if (bfme != null)
@@ -200,6 +201,7 @@ static class Program
     // ini skip=fades,interp,... turns single fixes off (for tracking down problems with mods)
     static string skip = "", found = "", patched = "";
     static bool offscreenAnim = false;   // ini offscreenanim=1: #13 experiment, off by default (didn't make off-screen shadows smooth)
+    static bool tintOpt = false;   // ini tint=1: the old 30 hz tint clock (#28: wrong, kept to compare)
     static bool On(string name) { return !skip.Split(',').Select(s => s.Trim()).Contains(name); }
 
     // proc isn't used, it's always our own process (kept so the patch functions read the same as before)
@@ -334,7 +336,7 @@ static class Program
             (floatText != null ? " | floattext " + hex(new[] { floatText.Add, floatText.Update }) : "") +
             (fpsFrames.Count > 0 ? " | fpsframes " + hex(fpsFrames) : "") +
             (blinks.Sites.Count > 0 ? " | blinks " + hex(blinks.Sites) : "") +
-            (blinks.Tint.Count > 0 ? " | tint " + hex(blinks.Tint) : "") +
+            (tintOpt && blinks.Tint.Count > 0 ? " | tint " + hex(blinks.Tint) : "") +
             (blinks.TimerUpdate != 0 ? " | modeltimer " + hex(new[] { blinks.TimerInit, blinks.TimerUpdate }) : "") +
             (pulse != null ? " | pulse " + hex(new[] { pulse.Call, pulse.Sine }) : "") +
             (turretSite != null ? " | turrets " + hex(new[] { turretSite.Site }) : "") +
@@ -1724,7 +1726,10 @@ static class Program
             // mov eax,[ecx] / add esp,10h / call [eax+78h] -> add esp,10h / call stub
             Write(proc, b.TimerInit, new byte[] { 0x83, 0xC4, 0x10, 0xE8 }.Concat(BitConverter.GetBytes(stubVa - (b.TimerInit + 8))).ToArray());
         }
-        if (On("tint"))
+        // off unless tint=1 (#28): every tint envelope caller sets its lengths as seconds * the client fps float, which
+        // starts from the fps we redirect, so they are already in real drawn frames and the stock clock was right. a 30 hz
+        // clock under them made every tint fade fps / 30 times slow (nod hub lines fading in for seconds at 240)
+        if (tintOpt && On("tint"))
             foreach (uint site in b.Tint)
             {
                 var p = new List<byte> { 0xE8 }; p.AddRange(BitConverter.GetBytes(stubVa - (site + 5)));
