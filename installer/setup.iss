@@ -3,13 +3,13 @@
 ;
 ; Inno Setup script (https://jrsoftware.org/isinfo.php). Same job as the old Setup.cs:
 ; find the games, put the drop-in files (d3d9.dll or dinput8.dll, CnCFpsUnlocker.dll,
-; RA3HighFps.ini) next to each game's real exe. Build with:
+; SAGEUnlocked.ini) next to each game's real exe. Build with:
 ;   ISCC.exe /DFiles=<folder with d3d9.dll, dinput8.dll, CnCFpsUnlocker.dll> setup.iss
 
 #ifndef Files
   #define Files "..\bin"
 #endif
-#define Version "1.9.4"
+#define Version "1.9.5"
 
 [Setup]
 AppId=TheeHorse.CnCFpsUnlocker
@@ -73,7 +73,7 @@ begin
     if Copy(s, i, Length(sub)) = sub then begin Result := i; exit; end;
 end;
 
-{ ---- ini (RA3HighFps.ini has no sections, just key=value) ---- }
+{ ---- ini (SAGEUnlocked.ini, RA3HighFps.ini up to 1.9.4, has no sections, just key=value) ---- }
 
 function IniKeyLine(line, key: String): Boolean;
 var t: String;
@@ -205,12 +205,14 @@ begin
     end;
 end;
 
+{ the ini whose settings the page starts from: SAGEUnlocked.ini, or the old RA3HighFps.ini if that's all there is }
 function IniPath(game: String): String;
-var exe: String;
+var exe, dir: String;
 begin
   exe := ExePath(game);
-  if exe <> '' then Result := ExtractFilePath(exe) + 'RA3HighFps.ini'
-  else Result := AddBackslash(game) + 'RA3HighFps.ini';
+  if exe <> '' then dir := ExtractFilePath(exe) else dir := AddBackslash(game);
+  Result := dir + 'SAGEUnlocked.ini';
+  if not FileExists(Result) and FileExists(dir + 'RA3HighFps.ini') then Result := dir + 'RA3HighFps.ini';
 end;
 
 { ---- finding games ---- }
@@ -443,7 +445,14 @@ begin
     err := 'couldn''t write to ' + dir + ' (is the game running?)';
     exit;
   end;
-  ini := dir + 'RA3HighFps.ini';
+  { 1.9.5 renamed RA3HighFps.ini / .log: carry the old ini's settings over, drop the old files }
+  ini := dir + 'SAGEUnlocked.ini';
+  if FileExists(dir + 'RA3HighFps.ini') then
+  begin
+    if not FileExists(ini) then RenameFile(dir + 'RA3HighFps.ini', ini)
+    else DeleteFile(dir + 'RA3HighFps.ini');
+  end;
+  DeleteFile(dir + 'RA3HighFps.log');
   if not FileExists(ini) then
   begin
     SetArrayLength(lines, 1);

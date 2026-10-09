@@ -2,7 +2,7 @@
 // GPL v3 or later, see LICENSE. https://github.com/TheeHorse/SAGE-Unlocked
 //
 // CnCFpsUnlocker.dll: the actual fixes. d3d9.dll / dinput8.dll (dll/proxy.c) loads this inside the game
-// right before it starts, it reads RA3HighFps.ini and patches the game's own memory. nothing on disk
+// right before it starts, it reads SAGEUnlocked.ini and patches the game's own memory. nothing on disk
 // changes.
 using System;
 using System.Collections.Generic;
@@ -16,13 +16,14 @@ using System.Threading;
 
 static class Program
 {
+    public const string Version = "1.9.5";   // keep in step with installer/setup.iss
     const uint ImageBase = 0x400000;
 
     // called from inside the game (dll/proxy.c)
     internal static int InProcess(string dir)
     {
         int r = Patch(IntPtr.Zero, Process.GetCurrentProcess().MainModule.FileName, dir, "drop-in DLL");
-        if (r == 1 && ReadIni(Path.Combine(dir, "RA3HighFps.ini"), "crcdump") == "1") new Thread(() => CrcDump(dir)) { IsBackground = true }.Start();
+        if (r == 1 && ReadIni(IniFile(dir), "crcdump") == "1") new Thread(() => CrcDump(dir)) { IsBackground = true }.Start();
         return r;
     }
 
@@ -82,8 +83,8 @@ static class Program
 
     static void AppendLog(string dir, string text)
     {
-        try { File.AppendAllText(Path.Combine(Path.GetTempPath(), "RA3HighFps.log"), text); } catch { }
-        try { File.AppendAllText(Path.Combine(dir, "RA3HighFps.log"), text); } catch { }
+        try { File.AppendAllText(Path.Combine(Path.GetTempPath(), LogName), text); } catch { }
+        try { File.AppendAllText(Path.Combine(dir, LogName), text); } catch { }
     }
 
     // RA3HighFps.exe on linux (proton's .net runs exes but the dll can't host it): game started suspended,
@@ -95,7 +96,7 @@ static class Program
 
     static int Patch(IntPtr proc, string exe, string dir, string how)
     {
-        string ini = Path.Combine(dir, "RA3HighFps.ini");
+        string ini = IniFile(dir);
         byte[] img = null;
         try
         {
@@ -116,7 +117,7 @@ static class Program
                 if (BitConverter.ToUInt32(Read(proc, bfme.Fps[0], 4), 0) != BitConverter.ToUInt32(img, (int)(bfme.Fps[0] - ImageBase)))
                     return 2;
                 ApplyPatchesBfme(proc, img, fps, bfme);
-                WriteLog(dir, DateTime.Now + "  " + how + ", fps=" + fps + (skip != "" ? ", skip=" + skip : "") + ", exe=" + Path.GetFileName(exe) +
+                WriteLog(dir, DateTime.Now + "  SAGE Unlocked " + Version + ", " + how + ", fps=" + fps + (skip != "" ? ", skip=" + skip : "") + ", exe=" + Path.GetFileName(exe) +
                     " (bfme2)\r\n" + found + "\r\n" + patched + "\r\n");
                 return 1;
             }
@@ -126,7 +127,7 @@ static class Program
             if (pacing.Count > 0 && BitConverter.ToUInt32(Read(proc, pacing[0], 4), 0) != BitConverter.ToUInt32(img, (int)(pacing[0] - ImageBase)))
                 return 2;
             ApplyPatches(proc, img, fps, zoom, true, null, false);
-            WriteLog(dir, DateTime.Now + "  " + how + ", fps=" + fps + ", zoom=" + zoom +
+            WriteLog(dir, DateTime.Now + "  SAGE Unlocked " + Version + ", " + how + ", fps=" + fps + ", zoom=" + zoom +
                 (skip != "" ? ", skip=" + skip : "") + ", exe=" + Path.GetFileName(exe) + "\r\n" + found + "\r\n" + patched + "\r\n");
             return 1;
         }
@@ -134,17 +135,27 @@ static class Program
         {
             string report = "";
             try { if (img != null) report = BuildReport(img, exe); } catch (Exception re) { report = "report failed: " + re.Message; }
-            WriteLog(dir, DateTime.Now + "  " + how + " failed: " + e + "\r\n\r\n" + report);
+            WriteLog(dir, DateTime.Now + "  SAGE Unlocked " + Version + ", " + how + " failed: " + e + "\r\n\r\n" + report);
             return 0;
         }
     }
 
-    // %TEMP%\RA3HighFps.log, and a copy next to the game where people look first (may be read-only, then just temp).
-    // the drop-in dll appends crash lines to both
+    // %TEMP%\SAGEUnlocked.log, and a copy next to the game where people look first (may be read-only, then just temp).
+    // the drop-in dll appends crash lines to both. an old RA3HighFps.log next to the game goes, so nobody posts a stale one
+    const string LogName = "SAGEUnlocked.log";
     static void WriteLog(string dir, string text)
     {
-        try { File.WriteAllText(Path.Combine(Path.GetTempPath(), "RA3HighFps.log"), text); } catch { }
-        try { File.WriteAllText(Path.Combine(dir, "RA3HighFps.log"), text); } catch { }
+        try { File.WriteAllText(Path.Combine(Path.GetTempPath(), LogName), text); } catch { }
+        try { File.WriteAllText(Path.Combine(dir, LogName), text); } catch { }
+        try { File.Delete(Path.Combine(dir, "RA3HighFps.log")); } catch { }
+        try { File.Delete(Path.Combine(Path.GetTempPath(), "RA3HighFps.log")); } catch { }
+    }
+
+    // SAGEUnlocked.ini (called RA3HighFps.ini up to 1.9.4: still read if it's the only one there, e.g. copied in by hand)
+    static string IniFile(string dir)
+    {
+        string ini = Path.Combine(dir, "SAGEUnlocked.ini"), old = Path.Combine(dir, "RA3HighFps.ini");
+        return !File.Exists(ini) && File.Exists(old) ? old : ini;
     }
 
     // for unknown builds: exe info, sections, and the bytes around every render/logic fps read
@@ -231,9 +242,10 @@ static class Program
             new { n = "shake", ok = fx.Shake != 0 }, new { n = "traillock", ok = trailLock != 0 }, new { n = "sway", ok = sway != null }, new { n = "stream", ok = stream != 0 }, new { n = "fpsframes", ok = fpsFrames.Count > 0 }, new { n = "blinks", ok = blinks.Sites.Count > 0 }, new { n = "tint", ok = blinks.Tint.Count > 0 }, new { n = "modeltimer", ok = blinks.TimerUpdate != 0 }, new { n = "pulse", ok = pulse != null }, new { n = "turrets", ok = turretSite != null }, new { n = "topple", ok = topple != null }, new { n = "offscreenanim", ok = animGate != 0 } };
         found = "found: " + string.Join(" ", have.Where(h => h.ok).Select(h => h.n)) + " | missing: " + string.Join(" ", have.Where(h => !h.ok).Select(h => h.n));
 
-        // +0 fps, +8 particle accum, +40 stubs
-        IntPtr mem = Alloc(proc, 4096);
+        // +0 fps, +8 particle accum, +40 stubs. the first page is full, newer things go in the second (+1000 and up)
+        IntPtr mem = Alloc(proc, 0x2000);
         if (mem == IntPtr.Zero) throw new Exception("couldn't allocate patch memory");
+        patchMem = (uint)mem; patchMemSize = 0x2000; memWrites.Clear(); memOverlaps.Clear();
         Write(proc, (uint)mem, BitConverter.GetBytes(fps));
         if (sched)
         {
@@ -274,7 +286,7 @@ static class Program
         if (On("offscreenanim") && offscreenAnim && animGate != 0 && fps > 30) Write(proc, animGate, new byte[] { 0xEB });   // jne -> jmp
         if (On("turrets") && turretSite != null && sched && fps > 30) PatchTurretInterp(proc, img, turretSite, schedSite, (uint)mem + 0xB80, (uint)mem + 0xD48, On("batches"));
         if ((blinks.Sites.Count > 0 || blinks.Tint.Count > 0 || blinks.TimerUpdate != 0) && fps > 30) PatchBlinks(proc, blinks, (uint)mem, (uint)mem + 0xB00);
-        if (On("stream") && stream != 0 && fps > 30) PatchStreamUpdate(proc, img, stream, (uint)mem, (uint)mem + 0xFA0);
+        if (On("stream") && stream != 0 && fps > 30) PatchStreamUpdate(proc, img, stream, (uint)mem, (uint)mem + 0x1100);
         if (On("models") && modelStep != 0) Redirect(proc, new List<uint> { modelStep }, (uint)mem + 0x10);   // 1/fps instead of 1/30
         if (On("particles") && throttlePfx && pfxSite != 0)
             ThrottleParticles(proc, pfxSite, pfxSim, (uint)mem, (uint)mem + 8, (uint)mem + 0x40);
@@ -283,7 +295,8 @@ static class Program
 
         // where everything went, so a crash address in the log can be matched to a fix
         Func<IEnumerable<uint>, string> hex = l => string.Join(" ", l.Where(a => a != 0).Select(a => "0x" + a.ToString("X")));
-        patched = "patch memory 0x" + ((uint)mem).ToString("X") + "-0x" + ((uint)mem + 0xFFF).ToString("X") +
+        patched = "patch memory 0x" + ((uint)mem).ToString("X") + "-0x" + ((uint)mem + patchMemSize - 1).ToString("X") +
+            (memOverlaps.Count > 0 ? "\r\nPATCH MEMORY OVERLAP (please report): " + string.Join(", ", memOverlaps.Distinct()) : "") +
             "\r\nsites: fps " + hex(sites) + " | fades " + hex(fades) + " | anim2d " + hex(anim2d) + " | construction " + hex(new[] { unpack }) +
             " | limiter " + hex(new[] { limiter }) + " | scroll " + hex(new[] { scrollSlot }) + " | zoom " + hex(new[] { zoomSite }) +
             " | interp " + hex(interpWindow) + " | models " + hex(new[] { modelStep }) + " | particles " + hex(new[] { pfxSite }) +
@@ -1125,7 +1138,7 @@ static class Program
         uint itable = table;
         if (batches)
         {
-            itable = mem + 0xF00;
+            itable = mem + 0x1000;
             int[] due = { 0, 0, 0, T / 2 - 3, int.MaxValue, int.MaxValue }, band = { 0, 0, 0, T / 2, T / 2, T / 2 };
             for (int k = 0; k < 6; k++) { Write(proc, table + (uint)(k * 4), BitConverter.GetBytes(due[k])); Write(proc, itable + (uint)(k * 4), BitConverter.GetBytes(band[k])); }
         }
@@ -1134,7 +1147,7 @@ static class Program
         Write(proc, k200, BitConverter.GetBytes((float)T));
         // stock sets interp to exactly phase/6 (float n * (1/6f), max 1) before every phase it runs. the phases stub A runs
         // itself have to see the same value, not stub B's time based one, or logic run in them can differ between pcs (desync)
-        uint phaseInterp = mem + 0xFC0;
+        uint phaseInterp = mem + 0x1020;
         for (int k = 1; k <= 6; k++) Write(proc, phaseInterp + (uint)((k - 1) * 4), BitConverter.GetBytes(Math.Min(1f, (float)(k * (double)(1f / 6f)))));
 
         // stub A: replaces mov ecx,[esi+phase] / cmp ecx,6
@@ -1201,7 +1214,7 @@ static class Program
         realClockFn = 0;
         if (realclockOpt && On("realclock") && site.TimeFn != 0)
         {
-            uint fn = mem + 0xF40, rbase = mem + 0xF38;
+            uint fn = mem + 0x1080, rbase = mem + 0x1040;
             var rc = new Asm(fn);
             rc.E(0x51, 0x52); rc.Rel(0xE8, site.TimeFn);                          // push ecx / push edx / eax = ms
             rc.E(0x8B, 0x0D); rc.D(rbase); rc.E(0x85, 0xC9); rc.J(0x75, "have");    // first call: base = now
@@ -1987,9 +2000,10 @@ static class Program
         bool sched = b.Sched != null && On("sched");
         found = "found: fps limiter" + (b.Sched != null ? " sched" : "") + (b.FrameMsSetter != 0 ? " animclock" : "") + (b.ScrollSlot != 0 ? " scroll" : "") + (b.SpellStore != 0 ? " spellstore" : "") +
                 " | missing:" + (b.Sched == null ? " sched" : "") + (b.FrameMsSetter == 0 ? " animclock" : "") + (b.ScrollSlot == 0 ? " scroll" : "") + (b.SpellStore == 0 ? " spellstore" : "");
-        IntPtr mem = Alloc(proc, 4096);
+        IntPtr mem = Alloc(proc, 0x2000);   // the shared scheduler keeps tables at +1000h and up
         if (mem == IntPtr.Zero) throw new Exception("couldn't allocate patch memory");
         uint m = (uint)mem;
+        patchMem = m; patchMemSize = 0x2000; memWrites.Clear(); memOverlaps.Clear();
         Write(proc, m, BitConverter.GetBytes(fps));
         foreach (var r in b.Restore) Write(proc, r.Item1, r.Item2);
         Redirect(proc, b.Fps, m);
@@ -2045,7 +2059,8 @@ static class Program
         }
         FlushCode(proc);
         Func<IEnumerable<uint>, string> hex = l => string.Join(" ", l.Where(a => a != 0).Select(a => "0x" + a.ToString("X")));
-        patched = "patch memory 0x" + m.ToString("X") + "-0x" + (m + 0xFFF).ToString("X") + "\r\nsites: fps " + hex(b.Fps) + " | limiter " + hex(new[] { b.Limiter }) + " | animclock " + hex(new[] { b.FrameMsSetter }) + " | scroll " + hex(new[] { b.ScrollSlot }) + " | spellstore " + hex(new[] { b.SpellStore, b.StoreJmp }) +
+        patched = "patch memory 0x" + m.ToString("X") + "-0x" + (m + patchMemSize - 1).ToString("X") +
+            (memOverlaps.Count > 0 ? "\r\nPATCH MEMORY OVERLAP (please report): " + string.Join(", ", memOverlaps.Distinct()) : "") + "\r\nsites: fps " + hex(b.Fps) + " | limiter " + hex(new[] { b.Limiter }) + " | animclock " + hex(new[] { b.FrameMsSetter }) + " | scroll " + hex(new[] { b.ScrollSlot }) + " | spellstore " + hex(new[] { b.SpellStore, b.StoreJmp }) +
             (b.Sched != null ? " | sched " + hex(new[] { b.Sched.Advance, b.Sched.Exit }) + string.Format(" phase {0:X} interp {1:X} dispatch {2:X}", b.Sched.Phase, b.Sched.Interp, b.Sched.Dispatch) : "") +
             (b.Restore.Count > 0 ? " | restored stock code " + hex(b.Restore.Select(r => r.Item1)) : "");
     }
@@ -2118,7 +2133,9 @@ static class Program
             if (k < 5) continue;
             uint at = mem + (uint)i;
             var c = new List<byte> { 0xE8 }; c.AddRange(BitConverter.GetBytes(realClockFn - (at + 5)));
+            uint keep = patchMem; patchMem = 0;   // edits inside our own stubs on purpose, not an overlap
             Write(proc, at, c.ToArray());
+            patchMem = keep;
             i += 4;
         }
     }
@@ -2130,7 +2147,7 @@ static class Program
     {
         if (realClockFn != 0)
         {
-            uint last = accVa + 0xEF0;   // mem+0xEF8 (accVa = mem+8)
+            uint last = accVa - 8 + 0x10C0;   // mem+10C0h (accVa = mem+8)
             var t = new Asm(stubVa);
             t.Rel(0xE8, realClockFn); t.E(0x8B, 0xD0, 0x2B, 0x05); t.D(last); t.E(0x89, 0x15); t.D(last);   // eax = frames since last
             t.E(0x6B, 0xC0, 0x1E, 0x03, 0x05); t.D(accVa);                                                     // eax = eax*30 + acc
@@ -2210,8 +2227,25 @@ static class Program
         else if (!ReadProcessMemory(proc, (IntPtr)va, b, (UIntPtr)n, out done)) throw new Exception(string.Format("couldn't read game memory at 0x{0:X}", va));
         return b;
     }
+    // patch memory bookkeeping: every write into it is remembered, and one that lands on part of an earlier one
+    // (a stub or table running into another) goes in the log. 1.9.4's invisible units (#22) were the sway thunks
+    // sitting on top of the scheduler's interp table
+    static uint patchMem, patchMemSize;
+    static List<Tuple<uint, int>> memWrites = new List<Tuple<uint, int>>();
+    static List<string> memOverlaps = new List<string>();
+    static void TrackWrite(uint va, int n)
+    {
+        if (patchMem == 0 || va < patchMem || va >= patchMem + patchMemSize) return;
+        if (va + n > patchMem + patchMemSize) memOverlaps.Add(string.Format("+{0:X}..+{1:X} runs past the end", va - patchMem, va + n - patchMem));
+        foreach (var w in memWrites)
+            if (va < w.Item1 + w.Item2 && w.Item1 < va + n && !(w.Item1 == va && w.Item2 == n))
+                memOverlaps.Add(string.Format("+{0:X}..+{1:X} over +{2:X}..+{3:X}", va - patchMem, va + n - patchMem, w.Item1 - patchMem, w.Item1 + w.Item2 - patchMem));
+        memWrites.Add(Tuple.Create(va, n));
+    }
+
     static void Write(IntPtr proc, uint va, byte[] data)
     {
+        TrackWrite(va, data.Length);
         uint old;
         UIntPtr done;
         if (!Protect(proc, (IntPtr)va, (UIntPtr)data.Length, PAGE_EXECUTE_READWRITE, out old))

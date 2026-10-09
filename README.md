@@ -18,20 +18,20 @@ Two ways, pick whichever you like. Either way there's no launch option to set, y
 
 | Game | Files | Put them in |
 |---|---|---|
-| Red Alert 3 (1.12 / 1.13) | `d3d9.dll`, `CnCFpsUnlocker.dll`, `RA3HighFps.ini` | `<RA3>\Data\` |
-| Red Alert 3 Uprising | `d3d9.dll`, `CnCFpsUnlocker.dll`, `RA3HighFps.ini` | `<Uprising>\Data\` |
-| Tiberium Wars (1.10) | `dinput8.dll`, `CnCFpsUnlocker.dll`, `RA3HighFps.ini` | `<TW>\RetailExe\1.10\` |
-| Tiberium Wars (1.9, some mods use it) | `dinput8.dll`, `CnCFpsUnlocker.dll`, `RA3HighFps.ini` | `<TW>\RetailExe\1.9\` |
-| Kane's Wrath (1.3) | `dinput8.dll`, `CnCFpsUnlocker.dll`, `RA3HighFps.ini` | `<KW>\RetailExe\1.3\` |
-| Kane's Wrath (1.02: mods, EA app / Origin / disc) | `dinput8.dll`, `CnCFpsUnlocker.dll`, `RA3HighFps.ini` | `<KW>\RetailExe\1.2\` |
-| Battle for Middle-earth II (new, not well tested yet) | `dinput8.dll`, `CnCFpsUnlocker.dll`, `RA3HighFps.ini` | `<BFME2>\` (next to `game.dat`) |
+| Red Alert 3 (1.12 / 1.13) | `d3d9.dll`, `CnCFpsUnlocker.dll`, `SAGEUnlocked.ini` | `<RA3>\Data\` |
+| Red Alert 3 Uprising | `d3d9.dll`, `CnCFpsUnlocker.dll`, `SAGEUnlocked.ini` | `<Uprising>\Data\` |
+| Tiberium Wars (1.10) | `dinput8.dll`, `CnCFpsUnlocker.dll`, `SAGEUnlocked.ini` | `<TW>\RetailExe\1.10\` |
+| Tiberium Wars (1.9, some mods use it) | `dinput8.dll`, `CnCFpsUnlocker.dll`, `SAGEUnlocked.ini` | `<TW>\RetailExe\1.9\` |
+| Kane's Wrath (1.3) | `dinput8.dll`, `CnCFpsUnlocker.dll`, `SAGEUnlocked.ini` | `<KW>\RetailExe\1.3\` |
+| Kane's Wrath (1.02: mods, EA app / Origin / disc) | `dinput8.dll`, `CnCFpsUnlocker.dll`, `SAGEUnlocked.ini` | `<KW>\RetailExe\1.2\` |
+| Battle for Middle-earth II (new, not well tested yet) | `dinput8.dll`, `CnCFpsUnlocker.dll`, `SAGEUnlocked.ini` | `<BFME2>\` (next to `game.dat`) |
 | Rise of the Witch-king (new, not well tested yet) | same 3 files (from the BFME2 folder in the zip) | `<RotWK>\` (next to `game.dat`) |
 
-To change the fps run the setup again or edit `RA3HighFps.ini` (the zip has ready-made ones for each fps in `FPS presets`). To uninstall delete `d3d9.dll` / `dinput8.dll`.
+To change the fps run the setup again or edit `SAGEUnlocked.ini` (the zip has ready-made ones for each fps in `FPS presets`). To uninstall delete `d3d9.dll` / `dinput8.dll`. Up to 1.9.4 the ini and log were called `RA3HighFps.ini` / `RA3HighFps.log`. An old `RA3HighFps.ini` still works if it's the only one there, and the setup renames it for you.
 
 **Coming from v1.6 or older?** You don't need the Steam launch option anymore, clear it (right-click the game > Properties > Launch Options). The setup swaps the old `RA3HighFps.exe` for one that just starts the game, so leaving it is fine. If you install by hand, clear it or delete the old `RA3HighFps.exe`, otherwise the old version patches first and the new fixes don't run.
 
-**Linux (Steam Proton / Wine):** the dll can't start .NET under Proton, but Proton runs `RA3HighFps.exe` fine, so that does the patching there. Copy `CnCFpsUnlocker.dll` and `RA3HighFps.ini` where the table says, put `RA3HighFps.exe` in the main game folder (next to `runme.exe` / `RA3EP1.exe` / `CNC3.exe` / `CNC3EP1.exe`), and set a launch option that swaps the game's launcher for it (thanks tomikaka22 for figuring this out):
+**Linux (Steam Proton / Wine):** the dll can't start .NET under Proton, but Proton runs `RA3HighFps.exe` fine, so that does the patching there. Copy `CnCFpsUnlocker.dll` and `SAGEUnlocked.ini` where the table says, put `RA3HighFps.exe` in the main game folder (next to `runme.exe` / `RA3EP1.exe` / `CNC3.exe` / `CNC3EP1.exe`), and set a launch option that swaps the game's launcher for it (thanks tomikaka22 for figuring this out):
 
 | Game | Launch option |
 |---|---|
@@ -42,7 +42,7 @@ To change the fps run the setup again or edit `RA3HighFps.ini` (the zip has read
 
 No dotnet48 or protontricks needed. The setup exe is Windows only.
 
-Tested on the **Steam** versions (RA3 1.13, Tiberium Wars 1.10, Kane's Wrath 1.3). If it doesn't work on your copy (or the game crashes), open an issue with your `RA3HighFps.log`. It's next to the game's exe (same folder as the dlls), or in `%TEMP%` if the game folder is read-only. It says which fixes loaded and, if the game crashed, where, which helps me a lot.
+Tested on the **Steam** versions (RA3 1.13, Tiberium Wars 1.10, Kane's Wrath 1.3). If it doesn't work on your copy (or the game crashes), open an issue with your `SAGEUnlocked.log`. It's next to the game's exe (same folder as the dlls), or in `%TEMP%` if the game folder is read-only. It says which fixes loaded and, if the game crashed, where, which helps me a lot.
 
 ## Picking a frame rate
 
@@ -55,7 +55,7 @@ Before v1.6 that wasn't true. RA3 ran about 33% fast at 120 and way faster at 24
 ## Known issues
 
 - **240 fps is experimental** until it's been tested more, some people have had problems with it. If you're on a 240hz monitor and something's weird try 165 or 120
-- **BFME2 support is brand new** and hasn't been tested much yet (only at 240 fps so far). If something looks too fast, choppy or broken, open an issue with your `RA3HighFps.log` (it's in the BFME2 folder)
+- **BFME2 support is brand new** and hasn't been tested much yet (only at 240 fps so far). If something looks too fast, choppy or broken, open an issue with your `SAGEUnlocked.log` (it's in the BFME2 folder)
 - **BFME All In One Launcher / Competitive Arena** delete files they don't know from the game folder, so the mod's 3 files disappear after you play. Start the game with `lotrbfme2.exe` / `lotrbfme2ep1.exe` instead, or copy the files back each time
 - Some effects might still play too fast. The RA3 power plant fog and the TW/KW Ion Cannon should be fixed now but need confirming ([#4](../../issues/4), [#5](../../issues/5))
 
