@@ -31,16 +31,7 @@ To change the fps run the setup again or edit `SAGEUnlocked.ini` (the zip has re
 
 **Coming from v1.6 or older?** You don't need the Steam launch option anymore, clear it (right-click the game > Properties > Launch Options). The setup swaps the old `RA3HighFps.exe` for one that just starts the game, so leaving it is fine. If you install by hand, clear it or delete the old `RA3HighFps.exe`, otherwise the old version patches first and the new fixes don't run.
 
-**Linux (Steam Proton / Wine):** the dll can't start .NET under Proton, but Proton runs `RA3HighFps.exe` fine, so that does the patching there. Copy `CnCFpsUnlocker.dll` and `SAGEUnlocked.ini` where the table says, put `RA3HighFps.exe` in the main game folder (next to `runme.exe` / `RA3EP1.exe` / `CNC3.exe` / `CNC3EP1.exe`), and set a launch option that swaps the game's launcher for it (thanks tomikaka22 for figuring this out):
-
-| Game | Launch option |
-|---|---|
-| Red Alert 3 | `eval "$(echo "%command%" \| sed 's/runme\.exe/RA3HighFps.exe/i')"` (Steam starts RA3 through runme.exe) |
-| Uprising | `eval "$(echo "%command%" \| sed 's/RA3EP1\.exe/RA3HighFps.exe/i')"` |
-| Tiberium Wars | `eval "$(echo "%command%" \| sed 's/CNC3\.exe/RA3HighFps.exe/i')"` |
-| Kane's Wrath | `eval "$(echo "%command%" \| sed 's/CNC3EP1\.exe/RA3HighFps.exe/i')"` |
-
-No dotnet48 or protontricks needed. The setup exe is Windows only.
+**Linux (Steam Proton / Wine):** not working right now, it's being reworked and tested ([#16](../../issues/16)). The Linux launcher is out of the download until then.
 
 Tested on the **Steam** versions (RA3 1.13, Tiberium Wars 1.10, Kane's Wrath 1.3). If it doesn't work on your copy (or the game crashes), open an issue with your `SAGEUnlocked.log` (and `RA3HighFps.log` if there is one, the small dll writes crashes there). They're next to the game's exe (same folder as the dlls), or in `%TEMP%` if the game folder is read-only. It says which fixes loaded and, if the game crashed, where, which helps me a lot.
 
