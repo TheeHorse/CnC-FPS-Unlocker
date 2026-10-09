@@ -239,6 +239,7 @@ static class Program
         Blinks blinks = FindBlinks(img);
         PulseSite pulse = FindPulse(img);
         GlowSite glow = FindGlow(img, pulse);
+        PfxCull pfxCull = FindPfxCull(img, render);
         TurretSite turretSite = FindTurretInterp(img);
         ToppleSite topple = FindTopple(img);
         uint animGate = FindAnimGate(img);
@@ -250,7 +251,7 @@ static class Program
             new { n = "anim2d", ok = anim2d.Count > 0 }, new { n = "models", ok = modelStep != 0 }, new { n = "particles", ok = pfxSite != 0 },
             new { n = "fades", ok = fades.Count > 0 || fx.Fades.Count > 0 }, new { n = "zoom", ok = zoomSite != 0 },
             new { n = "camsteps", ok = fx.CameraStep != 0 }, new { n = "fxframes", ok = fx.Frame5.Count > 0 }, new { n = "throb", ok = fx.Throb != 0 },
-            new { n = "shake", ok = fx.Shake != 0 }, new { n = "traillock", ok = trailLock != 0 }, new { n = "sway", ok = sway != null || sway3 != null }, new { n = "stream", ok = stream != 0 }, new { n = "audio", ok = audioSlot != 0 }, new { n = "floattext", ok = floatText != null }, new { n = "fpsframes", ok = fpsFrames.Count > 0 }, new { n = "blinks", ok = blinks.Sites.Count > 0 }, new { n = "tint", ok = blinks.Tint.Count > 0 }, new { n = "modeltimer", ok = blinks.TimerUpdate != 0 }, new { n = "glow", ok = glow != null }, new { n = "radarfade", ok = radarFade != null }, new { n = "drawfade", ok = drawFade.Count > 0 }, new { n = "fxdelays", ok = elapsed.Count > 0 }, new { n = "pulse", ok = pulse != null }, new { n = "turrets", ok = turretSite != null }, new { n = "topple", ok = topple != null }, new { n = "offscreenanim", ok = animGate != 0 } };
+            new { n = "shake", ok = fx.Shake != 0 }, new { n = "traillock", ok = trailLock != 0 }, new { n = "sway", ok = sway != null || sway3 != null }, new { n = "stream", ok = stream != 0 }, new { n = "audio", ok = audioSlot != 0 }, new { n = "floattext", ok = floatText != null }, new { n = "fpsframes", ok = fpsFrames.Count > 0 }, new { n = "blinks", ok = blinks.Sites.Count > 0 }, new { n = "tint", ok = blinks.Tint.Count > 0 }, new { n = "modeltimer", ok = blinks.TimerUpdate != 0 }, new { n = "glow", ok = glow != null }, new { n = "pfxcull", ok = pfxCull != null }, new { n = "radarfade", ok = radarFade != null }, new { n = "drawfade", ok = drawFade.Count > 0 }, new { n = "fxdelays", ok = elapsed.Count > 0 }, new { n = "pulse", ok = pulse != null }, new { n = "turrets", ok = turretSite != null }, new { n = "topple", ok = topple != null }, new { n = "offscreenanim", ok = animGate != 0 } };
         found = "found: " + string.Join(" ", have.Where(h => h.ok).Select(h => h.n)) + " | missing: " + string.Join(" ", have.Where(h => !h.ok).Select(h => h.n));
 
         // +0 fps, +8 particle accum, +40 stubs. the first page is full, newer things go in the second (+1000 and up)
@@ -323,7 +324,22 @@ static class Program
         if (On("radarfade") && radarFade != null && fps > 30) PatchRadarFade(proc, radarFade, (uint)mem, (uint)mem + 0x14A0);   // +14A0h..+1500h
         if (On("models") && modelStep != 0) Redirect(proc, new List<uint> { modelStep }, (uint)mem + 0x10);   // 1/fps instead of 1/30
         if (On("particles") && throttlePfx && pfxSite != 0)
-            ThrottleParticles(proc, pfxSite, pfxSim, (uint)mem, (uint)mem + 8, (uint)mem + 0x40);
+        {
+            // pfxcull: the sim goes through a stub that keeps the particle time of this sim step, the expired-particle
+            // removal reads that instead of the live time (see FindPfxCull)
+            uint simTarget = pfxSim;
+            if (On("pfxcull") && pfxCull != null && fps > 30)
+            {
+                uint save = (uint)mem + 0x15D0, stub = (uint)mem + 0x15C0;
+                var s = new Asm(stub);
+                s.E(0xA1); s.D(pfxCull.Time); s.E(0xA3); s.D(save); s.Rel(0xE9, pfxSim);   // mov eax,[time] / mov [save],eax / jmp sim
+                Write(proc, stub, s.Done(0x10));
+                Write(proc, save, BitConverter.GetBytes(BitConverter.ToUInt32(img, (int)(pfxCull.Time - ImageBase))));
+                Write(proc, pfxCull.Site, new byte[] { 0xA1 }.Concat(BitConverter.GetBytes(save)).ToArray());   // mov eax,[save]
+                simTarget = stub;
+            }
+            ThrottleParticles(proc, pfxSite, simTarget, (uint)mem, (uint)mem + 8, (uint)mem + 0x40);
+        }
         if (realClockFn != 0) UseRealClock(proc, (uint)mem);
         FlushCode(proc);
 
@@ -343,7 +359,7 @@ static class Program
             (stream != 0 ? " | stream " + hex(new[] { stream }) : "") +
             (audioSlot != 0 ? " | audio " + hex(new[] { audioSlot, audioFn }) : "") +
             (floatText != null ? " | floattext " + hex(new[] { floatText.Add, floatText.Update }) : "") +
-            (fpsFrames.Count > 0 ? " | fpsframes " + hex(fpsFrames) : "") + (radarFade != null ? " | radarfade " + hex(new[] { radarFade.Call, radarFade.Site }) : "") + (drawFade.Count > 0 ? " | drawfade " + hex(drawFade) : "") + (elapsed.Count > 0 ? " | fxdelays " + hex(elapsed) : "") + (glow != null ? " | glow " + hex(new[] { glow.Fn }) : "") +
+            (fpsFrames.Count > 0 ? " | fpsframes " + hex(fpsFrames) : "") + (radarFade != null ? " | radarfade " + hex(new[] { radarFade.Call, radarFade.Site }) : "") + (drawFade.Count > 0 ? " | drawfade " + hex(drawFade) : "") + (elapsed.Count > 0 ? " | fxdelays " + hex(elapsed) : "") + (glow != null ? " | glow " + hex(new[] { glow.Fn }) : "") + (pfxCull != null ? " | pfxcull " + hex(new[] { pfxCull.Site, pfxCull.Time }) : "") +
             (blinks.Sites.Count > 0 ? " | blinks " + hex(blinks.Sites) : "") +
             (blinks.Tint.Count > 0 ? " | tint " + hex(blinks.Tint.Concat(new[] { blinks.TintInstall9 }).Concat(blinks.TintLen)) : "") +
             (blinks.TimerUpdate != 0 ? " | modeltimer " + hex(new[] { blinks.TimerInit, blinks.TimerUpdate }) : "") +
@@ -1893,6 +1909,30 @@ static class Program
             Write(proc, site, p.ToArray());
             stubVa += 0x20;
         }
+    }
+
+    // gpu particle removal (soviet reactor glow flash, any effect made of overlapping long-lived particles): once per
+    // drawn frame the manager takes the w3d time x fps x 0.001 (particle frames, fps still 30) and drops every
+    // particle whose end time has passed. new particles only come from the sim, which runs 30 times a second. at 30
+    // fps both happen on the same frame; above that a particle could be dropped on a drawn frame between two sims and
+    // its follow-up only appeared at the next sim: nothing drawn for 1-3 frames, a blink. the removal now uses the
+    // time of the last sim step, so particles go on the sim's clock as at stock.
+    // ra3: push ecx / push esi / mov esi,ecx / call time / imul eax,[fps] / ... (call -> mov eax,[save], time fn is mov eax,[g] / ret)
+    // tw/kw: mov eax,[time] / imul eax,[fps] / test / mov [ebp-4],eax / push esi / mov esi,ecx
+    class PfxCull { public uint Site, Time; }
+
+    static PfxCull FindPfxCull(byte[] img, uint render)
+    {
+        uint m = FindUnique(img, "51 56 8B F1 E8 ?? ?? ?? ?? 0F AF 05 ?? ?? ?? ?? 85 C0 89 44 24 04 DB 44 24 04");
+        if (m != 0)
+        {
+            uint fn = CallTarget(img, m + 4); int f = (int)(fn - ImageBase);
+            if (img[f] != 0xA1 || img[f + 5] != 0xC3 || BitConverter.ToUInt32(img, (int)(m - ImageBase) + 12) != render) return null;
+            return new PfxCull { Site = m + 4, Time = BitConverter.ToUInt32(img, f + 1) };
+        }
+        m = FindUnique(img, "A1 ?? ?? ?? ?? 0F AF 05 ?? ?? ?? ?? 85 C0 89 45 FC 56 8B F1");
+        if (m == 0 || BitConverter.ToUInt32(img, (int)(m - ImageBase) + 8) != render) return null;
+        return new PfxCull { Site = m, Time = BitConverter.ToUInt32(img, (int)(m - ImageBase) + 1) };
     }
 
     // ra3/uprising drawable glow (soviet reactor flash): every drawable has two colour glow blocks (+184h ambient,
