@@ -33,21 +33,6 @@ To change the fps run the setup again or edit `SAGEUnlocked.ini` (the zip has re
 
 **Updating?** Just install over the old version. Up to 1.9.4 the ini was called `RA3HighFps.ini`, the setup renames it for you and an old one still works if it's the only one there. Coming from v1.6 or older, clear the Steam launch option (right-click the game > Properties > Launch Options) or delete the old `RA3HighFps.exe`, otherwise the old version patches first and the new fixes don't run. The setup handles the exe for you.
 
-## What it fixes
-
-Unlocking the frame rate is the easy part. Lots of things in these games count drawn frames instead of time, so at 120 fps they'd run 4x fast or look choppy. These are fixed:
-
-- **Game speed:** game logic runs off the real clock, so the game stays at normal speed even when your PC can't hold the fps
-- **Smooth movement:** units, turrets turning, knocked over lamp posts falling
-- **Camera:** scrolling, numpad zoom and rotate, screen shake
-- **Effects:** particles, tracers, lasers, fades, blinking markers, unit flashes, all at normal speed and without the white flicker
-- **RA3 construction:** Soviet and Empire buildings build up at the right speed instead of popping up instantly
-- **Timers:** double tap to jump to a group, radar and marker timers
-- **TW / KW:** flamethrower crash, money tick sound, credit popups
-- **Replays:** fast forward works
-
-Every fix shows up by name in `SAGEUnlocked.log`. If one causes trouble you can turn it off on its own with `skip=` in the ini (e.g. `skip=turrets`).
-
 ## Picking a frame rate
 
 Has to be a multiple of 15 (60, 75, 90, 120, 135, 165, 240...). The game ticks 15 times a second so every tick needs a whole number of frames or the speed drifts. 144hz monitor? Use 135. It won't go above your monitor's refresh rate anyway since the game can't draw faster than your screen.
