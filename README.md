@@ -90,6 +90,6 @@ Since the game loads the dll itself, mods and older versions just work the norma
 
 GPL v3 (see LICENSE). Use it, share it, change it, but anything built from this code has to stay open source under the same license and keep the credit. Versions up to v1.5 were MIT.
 
-If this made your game better and you want to say thanks, you can [buy me a coffee](https://buymeacoffee.com/sageeunloc0).
+If this made your game better and you want to say thanks, you can [buy me a coffee](https://buymeacoffee.com/sageeunloc0). Testing is just as good!
 
 - TheeHorse
