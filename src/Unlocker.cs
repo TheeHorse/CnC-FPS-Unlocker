@@ -232,6 +232,7 @@ static class Program
         FloatTextSites floatText = FindFloatingText(img);
         List<uint> fpsFrames = FindFpsFrameReads(img, render, sites);
         RadarFade radarFade = FindRadarFade(img);
+        List<uint> drawFade = FindDrawableFadeFps(img, render);
         // the radar fade runs on the 30hz frame with the stock 30 fps hold, so its hold reads stay at 30
         if (radarFade != null && On("radarfade")) fpsFrames.RemoveAll(a => a >= radarFade.Fn && a < radarFade.Fn + 0x80);
         Blinks blinks = FindBlinks(img);
@@ -247,7 +248,7 @@ static class Program
             new { n = "anim2d", ok = anim2d.Count > 0 }, new { n = "models", ok = modelStep != 0 }, new { n = "particles", ok = pfxSite != 0 },
             new { n = "fades", ok = fades.Count > 0 || fx.Fades.Count > 0 }, new { n = "zoom", ok = zoomSite != 0 },
             new { n = "camsteps", ok = fx.CameraStep != 0 }, new { n = "fxframes", ok = fx.Frame5.Count > 0 }, new { n = "throb", ok = fx.Throb != 0 },
-            new { n = "shake", ok = fx.Shake != 0 }, new { n = "traillock", ok = trailLock != 0 }, new { n = "sway", ok = sway != null || sway3 != null }, new { n = "stream", ok = stream != 0 }, new { n = "audio", ok = audioSlot != 0 }, new { n = "floattext", ok = floatText != null }, new { n = "fpsframes", ok = fpsFrames.Count > 0 }, new { n = "blinks", ok = blinks.Sites.Count > 0 }, new { n = "tint", ok = blinks.Tint.Count > 0 }, new { n = "modeltimer", ok = blinks.TimerUpdate != 0 }, new { n = "radarfade", ok = radarFade != null }, new { n = "pulse", ok = pulse != null }, new { n = "turrets", ok = turretSite != null }, new { n = "topple", ok = topple != null }, new { n = "offscreenanim", ok = animGate != 0 } };
+            new { n = "shake", ok = fx.Shake != 0 }, new { n = "traillock", ok = trailLock != 0 }, new { n = "sway", ok = sway != null || sway3 != null }, new { n = "stream", ok = stream != 0 }, new { n = "audio", ok = audioSlot != 0 }, new { n = "floattext", ok = floatText != null }, new { n = "fpsframes", ok = fpsFrames.Count > 0 }, new { n = "blinks", ok = blinks.Sites.Count > 0 }, new { n = "tint", ok = blinks.Tint.Count > 0 }, new { n = "modeltimer", ok = blinks.TimerUpdate != 0 }, new { n = "radarfade", ok = radarFade != null }, new { n = "drawfade", ok = drawFade.Count > 0 }, new { n = "pulse", ok = pulse != null }, new { n = "turrets", ok = turretSite != null }, new { n = "topple", ok = topple != null }, new { n = "offscreenanim", ok = animGate != 0 } };
         found = "found: " + string.Join(" ", have.Where(h => h.ok).Select(h => h.n)) + " | missing: " + string.Join(" ", have.Where(h => !h.ok).Select(h => h.n));
 
         // +0 fps, +8 particle accum, +40 stubs. the first page is full, newer things go in the second (+1000 and up)
@@ -314,6 +315,7 @@ static class Program
         if (On("stream") && stream != 0 && fps > 30) PatchStreamUpdate(proc, img, stream, (uint)mem, (uint)mem + 0x1100);
         if (On("audio") && audioSlot != 0 && fps > 30) PatchAudioUpdate(proc, audioSlot, audioFn, fps, (uint)mem, (uint)mem + 0x11C0, (uint)mem + 0x1200);
         if (On("floattext") && floatText != null && fps > 30) PatchFloatingText(proc, floatText, (uint)mem, (uint)mem + 0x1240);
+        if (On("drawfade") && drawFade.Count > 0 && fps > 30) Redirect(proc, drawFade, (uint)mem);
         if (On("radarfade") && radarFade != null && fps > 30) PatchRadarFade(proc, radarFade, (uint)mem, (uint)mem + 0x14A0);   // +14A0h..+1500h
         if (On("models") && modelStep != 0) Redirect(proc, new List<uint> { modelStep }, (uint)mem + 0x10);   // 1/fps instead of 1/30
         if (On("particles") && throttlePfx && pfxSite != 0)
@@ -337,7 +339,7 @@ static class Program
             (stream != 0 ? " | stream " + hex(new[] { stream }) : "") +
             (audioSlot != 0 ? " | audio " + hex(new[] { audioSlot, audioFn }) : "") +
             (floatText != null ? " | floattext " + hex(new[] { floatText.Add, floatText.Update }) : "") +
-            (fpsFrames.Count > 0 ? " | fpsframes " + hex(fpsFrames) : "") + (radarFade != null ? " | radarfade " + hex(new[] { radarFade.Call, radarFade.Site }) : "") +
+            (fpsFrames.Count > 0 ? " | fpsframes " + hex(fpsFrames) : "") + (radarFade != null ? " | radarfade " + hex(new[] { radarFade.Call, radarFade.Site }) : "") + (drawFade.Count > 0 ? " | drawfade " + hex(drawFade) : "") +
             (blinks.Sites.Count > 0 ? " | blinks " + hex(blinks.Sites) : "") +
             (blinks.Tint.Count > 0 ? " | tint " + hex(blinks.Tint.Concat(new[] { blinks.TintInstall9 }).Concat(blinks.TintLen)) : "") +
             (blinks.TimerUpdate != 0 ? " | modeltimer " + hex(new[] { blinks.TimerInit, blinks.TimerUpdate }) : "") +
@@ -1846,6 +1848,20 @@ static class Program
         Write(proc, p.Call + 1, BitConverter.GetBytes(stubVa - (p.Call + 5)));
         // mov edx,[ecx] / mov eax,[edx+74h] / call eax -> call frameStub / nop / nop
         Write(proc, p.Sine, new byte[] { 0xE8 }.Concat(BitConverter.GetBytes(frameStub - (p.Sine + 5))).Concat(new byte[] { 0x90, 0x90 }).ToArray());
+    }
+
+    // tw/kw drawable fade/blend (0x4809DB in tw 1.10): runs once per drawn frame (it also steps a phase by the real
+    // 1/fps), counts [+1F8h] down by 1 per call against a length of fps x [+1E4h] seconds, both read from the render
+    // fps (still 30): over in a quarter of the time at 120. its fps reads get the real fps, length in drawn frames
+    static List<uint> FindDrawableFadeFps(byte[] img, uint render)
+    {
+        var l = new List<uint>();
+        uint a = FindUnique(img, "A1 ?? ?? ?? ?? 85 C0 59 D8 86 ?? ?? 00 00 D9 5D ?? D9 86 ?? ?? 00 00 D9 5D ?? DB 05 ?? ?? ?? ?? 7D 06 D8 05 ?? ?? ?? ?? 8B 86 ?? ?? 00 00 D8 4D");
+        uint b = FindUnique(img, "A1 ?? ?? ?? ?? DB 05 ?? ?? ?? ?? 85 C0 7D 06 D8 05 ?? ?? ?? ?? 8B 86 ?? ?? 00 00 D8 8E ?? ?? 00 00 8B C8 85 C9 89 4D ?? DB 45");
+        if (a == 0 || b == 0 || b < a || b > a + 0x100) return l;
+        foreach (uint op in new[] { a + 1, a + 28, b + 1, b + 7 })
+            if (BitConverter.ToUInt32(img, (int)(op - ImageBase)) == render) l.Add(op); else return new List<uint>();
+        return l;
     }
 
     // radar / group marker fade (all four games): six markers, each held for fps x seconds of getFrame, then every call
