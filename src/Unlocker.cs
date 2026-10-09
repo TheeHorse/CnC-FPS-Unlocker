@@ -221,6 +221,7 @@ static class Program
         uint netObject, zoomSite = FindZoomSite(img, out netObject);
         List<uint> interpWindow = FindInterpWindow(img);
         SchedSite schedSite = FindScheduler(img);
+        if (schedSite != null && On("ffwd")) FindFastForward(img, schedSite);
         bool sched = schedSite != null && On("sched");   // skip=sched falls back to the plain fps redirect
         HeldCamera held = FindHeldCamera(img);
         Cnc3Fx fx = FindCnc3Fx(img, modelStep);
@@ -236,7 +237,7 @@ static class Program
         if (pfxSite == 0 && fx.PfxSite != 0) { pfxSite = fx.PfxSite; pfxSim = fx.PfxSim; }   // tw / kw
         // for the log: which fixes this exe has, so reports from unknown builds say what's missing
         var have = new[] {
-            new { n = "sched", ok = schedSite != null }, new { n = "scroll", ok = scrollSlot != 0 }, new { n = "camerakeys", ok = held != null },
+            new { n = "sched", ok = schedSite != null }, new { n = "ffwd", ok = schedSite != null && schedSite.FfGlobal != 0 }, new { n = "scroll", ok = scrollSlot != 0 }, new { n = "camerakeys", ok = held != null },
             new { n = "interp", ok = interpWindow.Count > 0 }, new { n = "limiter", ok = limiter != 0 }, new { n = "construction", ok = unpack != 0 },
             new { n = "anim2d", ok = anim2d.Count > 0 }, new { n = "models", ok = modelStep != 0 }, new { n = "particles", ok = pfxSite != 0 },
             new { n = "fades", ok = fades.Count > 0 || fx.Fades.Count > 0 }, new { n = "zoom", ok = zoomSite != 0 },
@@ -265,7 +266,8 @@ static class Program
             // forcing the high-fps branch made it always no (1.9.4: units drawn stale or not at all, enemies seen in fog,
             // late units). batches: it says yes from the frame a tick starts until the next engine update, once per
             // tick like stock at 30 fps (flag set by the scheduler's exit stub)
-            List<uint> modeCheck = ratio.Where(s => img[(int)(s - 2 - ImageBase)] == 0xCC).ToList();
+            // (ra3 pads before it, tw/kw put it right after the previous function, so: something calls it)
+            List<uint> modeCheck = ratio.Where(s => img[(int)(s - 1 - ImageBase)] == 0xA1 && (img[(int)(s - 2 - ImageBase)] == 0xCC || IsCallTarget(img, s - 1))).ToList();
             Write(proc, (uint)mem + 0x90, BitConverter.GetBytes(Math.Max(fps, 90)));
             Write(proc, (uint)mem + 0x94, BitConverter.GetBytes(On("batches") ? 2 * logicFps : Math.Max(fps, 90)));
             if (On("batches") && On("schedinterp") && On("newtick") && modeCheck.Count == 1 && img[(int)(modeCheck[0] - 1 - ImageBase)] == 0xA1)
@@ -319,6 +321,7 @@ static class Program
             " | interp " + hex(interpWindow) + " | models " + hex(new[] { modelStep }) + " | particles " + hex(new[] { pfxSite }) +
             (schedSite != null ? " | sched " + hex(new[] { schedSite.Advance, schedSite.Exit }) : "") +
             (modeCheckFn != 0 ? " | newtick " + hex(new[] { modeCheckFn }) : "") +
+            (schedSite != null && schedSite.FfGlobal != 0 ? " | ffwd 0x" + schedSite.FfGlobal.ToString("X") + "+" + schedSite.FfOff.ToString("X") : "") +
             (held != null ? " | camerakeys " + hex(new[] { held.ZoomIn, held.ZoomOut, held.Rotate }) : "") +
             (trailLock != 0 ? " | traillock " + hex(new[] { trailLock }) : "") +
             (sway != null ? " | sway " + hex(new[] { sway.Guard }) : "") +
@@ -1098,12 +1101,20 @@ static class Program
     // (every 66.67ms, in 1/3ms units so it's exact), run whatever phases are due each frame, and set
     // interp from the time so movement stays smooth
     // PreGlobal/PreOff/PreFn: bfme2 calls PreFn([[PreGlobal]+PreOff] * 10 + phase - 1) before each dispatch
-    class SchedSite { public uint Advance, Exit, TimeFn; public byte Phase, Interp; public uint Dispatch; public uint PreGlobal, PreFn; public byte PreOff; public int Tick = 200; }   // Tick: logic tick in 1/3 ms (200 = 15 hz, 600 = 5 hz)
+    class SchedSite { public uint Advance, Exit, TimeFn; public byte Phase, Interp; public uint Dispatch; public uint PreGlobal, PreFn; public byte PreOff; public int Tick = 200; public uint FfGlobal, FfOff; }   // Tick: logic tick in 1/3 ms (200 = 15 hz, 600 = 5 hz)
 
     const string SchedPatternA = "8B 0D ?? ?? ?? ?? BB 01 00 00 00 88 99 C4 00 00 00 8B 4E 58 83 F9 06 75 1A 80 7E 64 00 74 14 A1 ?? ?? ?? ?? 33 D2 F7 35";
     const string SchedPatternB = "8B 16 50 8B 82 90 00 00 00 8B CE FF D0 8B 0D ?? ?? ?? ?? 8B 11 8B 82 A0 00 00 00 5F 5E 5B 83 C4 04";
     const string SchedPatternCnc3A = "33 DB 43 88 98 D4 00 00 00 8B 4E 40 83 F9 06 75 1A 80 7E 4C 00 74 14 A1";
     const string SchedPatternCnc3B = "8B 16 50 FF 92 94 00 00 00 8B 0D ?? ?? ?? ?? 8B 01 FF 90";
+
+    static bool IsCallTarget(byte[] img, uint va)
+    {
+        int end = TextEnd(img);
+        for (int i = 0x1000; i < end - 5; i++)
+            if (img[i] == 0xE8 && CallTarget(img, ImageBase + (uint)i) == va) return true;
+        return false;
+    }
 
     static uint CallTarget(byte[] img, uint va)
     {
@@ -1136,6 +1147,25 @@ static class Program
             return s.TimeFn != 0 ? s : null;
         }
         return null;
+    }
+
+    // replay fast forward: the main loop clears the "use the frame limiter" byte when the global data's fast mode byte
+    // is set: mov ecx,[globaldata] / cmp byte [ecx+off],0 / je +7 / mov byte [limiter],0. the limiter byte has to be
+    // the one the limiter itself tests (cmp byte [limiter],0). c&c3: mov eax,[globaldata] / cmp byte [eax+off32],0 / je / mov byte [limiter],0
+    static void FindFastForward(byte[] img, SchedSite s)
+    {
+        var hits = new List<Tuple<uint, uint>>();
+        Action<uint, int, uint, int> add = (m, flagAt, off, gAt) =>
+        {
+            int o = (int)(m - ImageBase);
+            byte[] flag = BitConverter.GetBytes(BitConverter.ToUInt32(img, o + flagAt));
+            if (FindAll(img, "80 3D " + string.Join(" ", flag.Select(x => x.ToString("X2"))) + " 00").Count > 0)
+                hits.Add(Tuple.Create(BitConverter.ToUInt32(img, o + gAt), off));
+        };
+        foreach (uint m in FindAll(img, "8B 0D ?? ?? ?? ?? 80 79 ?? 00 74 07 C6 05 ?? ?? ?? ?? 00")) add(m, 14, img[m - ImageBase + 8], 2);
+        foreach (uint m in FindAll(img, "A1 ?? ?? ?? ?? 80 B8 ?? ?? 00 00 00 74 07 C6 05 ?? ?? ?? ?? 00")) add(m, 16, BitConverter.ToUInt32(img, (int)(m - ImageBase) + 7), 1);
+        if (hits.Count != 1) return;
+        s.FfGlobal = hits[0].Item1; s.FfOff = hits[0].Item2;
     }
 
     static void PatchScheduler(IntPtr proc, byte[] img, SchedSite site, uint fpsVa, uint mem, bool batches = false)
@@ -1173,6 +1203,9 @@ static class Program
         a.E(0x89, 0x35); a.D(eng);                                   // mov [engine],esi
         if (newTickFlag != 0) { a.E(0xC6, 0x05); a.D(newTickFlag); a.E(0x00); }   // mov byte [newtick],0: a new engine update
         a.E(0x50, 0x52, 0x51);                                       // push eax / push edx / push ecx
+        // replay fast forward (#26): the game turns its frame limiter off and stock logic speeds up with the frame rate.
+        // the clock would hold it at normal speed (only animations sped up), so step aside and let stock count frames
+        if (site.FfGlobal != 0) { a.E(0xA1); a.D(site.FfGlobal); a.E(0x85, 0xC0); a.J(0x74, "noff"); a.E(0x80, 0xB8); a.D(site.FfOff); a.E(0x00); a.J(0x75, "pass"); a.L("noff"); }
         a.E(0xA1); a.D(fpsVa); a.E(0x33, 0xD2, 0xB9, 0x0F, 0, 0, 0, 0xF7, 0xF1); a.E(0xA3); a.D(r);   // r = fps / 15
         a.Rel(0xE8, site.TimeFn);                                   // eax = ms (timeGetTime)
         a.E(0x8D, 0x04, 0x40); a.E(0xA3); a.D(now3);                 // now3 = ms * 3
@@ -1253,7 +1286,10 @@ static class Program
         if (newTickFlag != 0)
         {
             // a tick started this frame (stub A passed it on) and its first batch ran: phase 6 / 2 = 3. held back by the network -> 7
-            b.E(0x83, 0x3D); b.D(pend); b.E(0x01); b.J(0x75, "nonew");
+            // (fast forward: stock runs it, any frame that just ran phases 1-3)
+            b.E(0x83, 0x3D); b.D(pend); b.E(0x01); b.J(0x74, "chk");
+            if (site.FfGlobal != 0) { b.E(0xA1); b.D(site.FfGlobal); b.E(0x85, 0xC0); b.J(0x74, "nonew"); b.E(0x80, 0xB8); b.D(site.FfOff); b.E(0x00); b.J(0x74, "nonew"); } else b.J(0xEB, "nonew");
+            b.L("chk");
             b.E(0x83, 0x7E, ph, 0x03); b.J(0x75, "nonew");
             b.E(0xC6, 0x05); b.D(newTickFlag); b.E(0x01);
             b.L("nonew");
