@@ -127,14 +127,14 @@ static class Forwarder
         string note;
         try
         {
-            // the dll writes SAGEUnlocked.log. if it fails the game still runs, just without the fixes
+            // the dll writes RA3HighFps.log. if it fails the game still runs, just without the fixes
             var entry = Assembly.LoadFrom(dll).GetType("DllEntry");
             int r = (int)entry.GetMethod("Launch").Invoke(null, new object[] { pi.hProcess, exe, dir });
             note = r == 1 ? "patched" : r == 2 ? "already patched" : "patching failed (see above)";
         }
         catch (Exception e) { note = "couldn't run CnCFpsUnlocker.dll: " + (e.InnerException ?? e); }
         // what got started, so a log from a modded install says what happened
-        try { File.AppendAllText(Path.Combine(dir, "SAGEUnlocked.log"), "RA3HighFps.exe started: " + cmd + "\r\n" + note + "\r\n"); } catch { }
+        try { File.AppendAllText(Path.Combine(dir, "RA3HighFps.log"), "RA3HighFps.exe started: " + cmd + "\r\n" + note + "\r\n"); } catch { }
         ResumeThread(pi.hThread);
         CloseHandle(pi.hThread);
         // wait so Steam sees the game as running until it closes

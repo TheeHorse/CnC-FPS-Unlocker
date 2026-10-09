@@ -142,14 +142,13 @@ static class Program
     }
 
     // %TEMP%\SAGEUnlocked.log, and a copy next to the game where people look first (may be read-only, then just temp).
-    // the drop-in dll appends crash lines to both. an old RA3HighFps.log next to the game goes, so nobody posts a stale one
+    // the drop-in dll (d3d9.dll / dinput8.dll, unchanged since 1.9.4) still writes its own lines (.NET start failures,
+    // crashes) to RA3HighFps.log, so that one stays
     const string LogName = "SAGEUnlocked.log";
     static void WriteLog(string dir, string text)
     {
         try { File.WriteAllText(Path.Combine(Path.GetTempPath(), LogName), text); } catch { }
         try { File.WriteAllText(Path.Combine(dir, LogName), text); } catch { }
-        try { File.Delete(Path.Combine(dir, "RA3HighFps.log")); } catch { }
-        try { File.Delete(Path.Combine(Path.GetTempPath(), "RA3HighFps.log")); } catch { }
     }
 
     // SAGEUnlocked.ini (called RA3HighFps.ini up to 1.9.4: still read if it's the only one there, e.g. copied in by hand)

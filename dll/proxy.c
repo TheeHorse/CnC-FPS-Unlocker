@@ -57,7 +57,7 @@ static const GUID IID_ICLRRuntimeInfo = {0xbd39d1d2, 0xba2f, 0x486a, {0x89, 0xb0
 static const GUID CLSID_CLRRuntimeHost = {0x90f1a06e, 0x7712, 0x4762, {0x86, 0xb5, 0x7a, 0x5e, 0xba, 0x6b, 0xdb, 0x02}};
 static const GUID IID_ICLRRuntimeHost = {0x90f1a06c, 0x7712, 0x4762, {0x86, 0xb5, 0x7a, 0x5e, 0xba, 0x6b, 0xdb, 0x02}};
 
-/* --- log: %TEMP%\SAGEUnlocked.log, and a copy next to the game (people look there first) --- */
+/* --- log: %TEMP%\RA3HighFps.log, and a copy next to the game (people look there first) --- */
 static void log_to(const WCHAR *path, const char *text, int append)
 {
     HANDLE f = CreateFileW(path, append ? FILE_APPEND_DATA : GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE, 0,
@@ -71,9 +71,9 @@ static void log_to(const WCHAR *path, const char *text, int append)
 static void log_line(const char *text, int append)
 {
     WCHAR path[MAX_PATH];
-    if (GetTempPathW(MAX_PATH - 20, path)) { lstrcatW(path, L"SAGEUnlocked.log"); log_to(path, text, append); }
+    if (GetTempPathW(MAX_PATH - 20, path)) { lstrcatW(path, L"RA3HighFps.log"); log_to(path, text, append); }
     lstrcpyW(path, dll_dir);
-    lstrcatW(path, L"\\SAGEUnlocked.log");
+    lstrcatW(path, L"\\RA3HighFps.log");
     log_to(path, text, append);
 }
 

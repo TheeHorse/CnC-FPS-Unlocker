@@ -42,7 +42,7 @@ To change the fps run the setup again or edit `SAGEUnlocked.ini` (the zip has re
 
 No dotnet48 or protontricks needed. The setup exe is Windows only.
 
-Tested on the **Steam** versions (RA3 1.13, Tiberium Wars 1.10, Kane's Wrath 1.3). If it doesn't work on your copy (or the game crashes), open an issue with your `SAGEUnlocked.log`. It's next to the game's exe (same folder as the dlls), or in `%TEMP%` if the game folder is read-only. It says which fixes loaded and, if the game crashed, where, which helps me a lot.
+Tested on the **Steam** versions (RA3 1.13, Tiberium Wars 1.10, Kane's Wrath 1.3). If it doesn't work on your copy (or the game crashes), open an issue with your `SAGEUnlocked.log` (and `RA3HighFps.log` if there is one, the small dll writes crashes there). They're next to the game's exe (same folder as the dlls), or in `%TEMP%` if the game folder is read-only. It says which fixes loaded and, if the game crashed, where, which helps me a lot.
 
 ## Picking a frame rate
 
