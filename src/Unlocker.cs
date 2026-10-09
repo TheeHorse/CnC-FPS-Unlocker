@@ -238,6 +238,7 @@ static class Program
         if (radarFade != null && On("radarfade")) fpsFrames.RemoveAll(a => a >= radarFade.Fn && a < radarFade.Fn + 0x80);
         Blinks blinks = FindBlinks(img);
         PulseSite pulse = FindPulse(img);
+        GlowSite glow = FindGlow(img, pulse);
         TurretSite turretSite = FindTurretInterp(img);
         ToppleSite topple = FindTopple(img);
         uint animGate = FindAnimGate(img);
@@ -249,7 +250,7 @@ static class Program
             new { n = "anim2d", ok = anim2d.Count > 0 }, new { n = "models", ok = modelStep != 0 }, new { n = "particles", ok = pfxSite != 0 },
             new { n = "fades", ok = fades.Count > 0 || fx.Fades.Count > 0 }, new { n = "zoom", ok = zoomSite != 0 },
             new { n = "camsteps", ok = fx.CameraStep != 0 }, new { n = "fxframes", ok = fx.Frame5.Count > 0 }, new { n = "throb", ok = fx.Throb != 0 },
-            new { n = "shake", ok = fx.Shake != 0 }, new { n = "traillock", ok = trailLock != 0 }, new { n = "sway", ok = sway != null || sway3 != null }, new { n = "stream", ok = stream != 0 }, new { n = "audio", ok = audioSlot != 0 }, new { n = "floattext", ok = floatText != null }, new { n = "fpsframes", ok = fpsFrames.Count > 0 }, new { n = "blinks", ok = blinks.Sites.Count > 0 }, new { n = "tint", ok = blinks.Tint.Count > 0 }, new { n = "modeltimer", ok = blinks.TimerUpdate != 0 }, new { n = "radarfade", ok = radarFade != null }, new { n = "drawfade", ok = drawFade.Count > 0 }, new { n = "fxdelays", ok = elapsed.Count > 0 }, new { n = "pulse", ok = pulse != null }, new { n = "turrets", ok = turretSite != null }, new { n = "topple", ok = topple != null }, new { n = "offscreenanim", ok = animGate != 0 } };
+            new { n = "shake", ok = fx.Shake != 0 }, new { n = "traillock", ok = trailLock != 0 }, new { n = "sway", ok = sway != null || sway3 != null }, new { n = "stream", ok = stream != 0 }, new { n = "audio", ok = audioSlot != 0 }, new { n = "floattext", ok = floatText != null }, new { n = "fpsframes", ok = fpsFrames.Count > 0 }, new { n = "blinks", ok = blinks.Sites.Count > 0 }, new { n = "tint", ok = blinks.Tint.Count > 0 }, new { n = "modeltimer", ok = blinks.TimerUpdate != 0 }, new { n = "glow", ok = glow != null }, new { n = "radarfade", ok = radarFade != null }, new { n = "drawfade", ok = drawFade.Count > 0 }, new { n = "fxdelays", ok = elapsed.Count > 0 }, new { n = "pulse", ok = pulse != null }, new { n = "turrets", ok = turretSite != null }, new { n = "topple", ok = topple != null }, new { n = "offscreenanim", ok = animGate != 0 } };
         found = "found: " + string.Join(" ", have.Where(h => h.ok).Select(h => h.n)) + " | missing: " + string.Join(" ", have.Where(h => !h.ok).Select(h => h.n));
 
         // +0 fps, +8 particle accum, +40 stubs. the first page is full, newer things go in the second (+1000 and up)
@@ -317,6 +318,7 @@ static class Program
         if (On("audio") && audioSlot != 0 && fps > 30) PatchAudioUpdate(proc, audioSlot, audioFn, fps, (uint)mem, (uint)mem + 0x11C0, (uint)mem + 0x1200);
         if (On("floattext") && floatText != null && fps > 30) PatchFloatingText(proc, floatText, (uint)mem, (uint)mem + 0x1240);
         if (On("drawfade") && drawFade.Count > 0 && fps > 30) Redirect(proc, drawFade, (uint)mem);
+        if (On("glow") && glow != null && fps > 30) PatchGlow(proc, img, glow, (uint)mem, (uint)mem + 0x1560);   // +1560h..+15C0h
         if (On("fxdelays") && elapsed.Count > 0 && fps > 30) PatchElapsedSites(proc, img, elapsed, (uint)mem, (uint)mem + 0x1500);   // +1500h..+1560h
         if (On("radarfade") && radarFade != null && fps > 30) PatchRadarFade(proc, radarFade, (uint)mem, (uint)mem + 0x14A0);   // +14A0h..+1500h
         if (On("models") && modelStep != 0) Redirect(proc, new List<uint> { modelStep }, (uint)mem + 0x10);   // 1/fps instead of 1/30
@@ -341,7 +343,7 @@ static class Program
             (stream != 0 ? " | stream " + hex(new[] { stream }) : "") +
             (audioSlot != 0 ? " | audio " + hex(new[] { audioSlot, audioFn }) : "") +
             (floatText != null ? " | floattext " + hex(new[] { floatText.Add, floatText.Update }) : "") +
-            (fpsFrames.Count > 0 ? " | fpsframes " + hex(fpsFrames) : "") + (radarFade != null ? " | radarfade " + hex(new[] { radarFade.Call, radarFade.Site }) : "") + (drawFade.Count > 0 ? " | drawfade " + hex(drawFade) : "") + (elapsed.Count > 0 ? " | fxdelays " + hex(elapsed) : "") +
+            (fpsFrames.Count > 0 ? " | fpsframes " + hex(fpsFrames) : "") + (radarFade != null ? " | radarfade " + hex(new[] { radarFade.Call, radarFade.Site }) : "") + (drawFade.Count > 0 ? " | drawfade " + hex(drawFade) : "") + (elapsed.Count > 0 ? " | fxdelays " + hex(elapsed) : "") + (glow != null ? " | glow " + hex(new[] { glow.Fn }) : "") +
             (blinks.Sites.Count > 0 ? " | blinks " + hex(blinks.Sites) : "") +
             (blinks.Tint.Count > 0 ? " | tint " + hex(blinks.Tint.Concat(new[] { blinks.TintInstall9 }).Concat(blinks.TintLen)) : "") +
             (blinks.TimerUpdate != 0 ? " | modeltimer " + hex(new[] { blinks.TimerInit, blinks.TimerUpdate }) : "") +
@@ -1891,6 +1893,50 @@ static class Program
             Write(proc, site, p.ToArray());
             stubVa += 0x20;
         }
+    }
+
+    // ra3/uprising drawable glow (soviet reactor flash): every drawable has two colour glow blocks (+184h ambient,
+    // +188h status) and the drawable update steps both once per drawn frame: ramp up by a fixed step (ra3) or +1 on a
+    // counter (uprising), hold for n frames, ramp down, then off until the next trigger. lengths are 30 fps frames, so
+    // above ~60 fps the cycle ended early and sat dark until the next one: a rhythmic flash. the step function only
+    // runs on drawn frames that start a new 30hz frame (entry gate, so both callers are covered; the second one is a
+    // tail jump). found through the pulse call, the glow call sits right before it: mov ecx,[esi+184h] / test / je / call
+    class GlowSite { public uint Fn, Client; public int Copy; }
+
+    static GlowSite FindGlow(byte[] img, PulseSite p)
+    {
+        if (p == null) return null;
+        int c = (int)(p.Call - ImageBase) - 7;
+        if (!(img[c - 4] == 0x85 && img[c - 3] == 0xC9 && img[c - 2] == 0x74 && img[c - 1] == 0x05 && img[c] == 0xE8)) return null;
+        uint fn = CallTarget(img, p.Call - 7);
+        int f = (int)(fn - ImageBase);
+        // ra3: movsx eax,byte [ecx+x] / cmp eax,3 (7 bytes). uprising: mov eax,[ecx+4] / sub esp,10h (6 bytes)
+        if (img[f] == 0x0F && img[f + 1] == 0xBE && img[f + 2] == 0x41 && img[f + 4] == 0x83 && img[f + 5] == 0xF8 && img[f + 6] == 0x03)
+            return new GlowSite { Fn = fn, Client = p.Client, Copy = 7 };
+        if (img[f] == 0x8B && img[f + 1] == 0x41 && img[f + 3] == 0x83 && img[f + 4] == 0xEC && img[f + 6] == 0x83 && img[f + 8] == 0x03)
+            return new GlowSite { Fn = fn, Client = p.Client, Copy = 6 };
+        return null;
+    }
+
+    static void PatchGlow(IntPtr proc, byte[] img, GlowSite s, uint fpsVa, uint stubVa)
+    {
+        int f = (int)(s.Fn - ImageBase);
+        // gate: return unless f(now) != f(now - 1), else the moved first instructions and back into the function
+        var g = new Asm(stubVa);
+        g.E(0x51, 0x8B, 0x0D); g.D(s.Client);
+        g.E(0x8B, 0x01, 0xFF, 0x50, 0x74, 0x8B, 0xC8);
+        g.E(0x6B, 0xC0, 0x1E, 0x33, 0xD2, 0xF7, 0x35); g.D(fpsVa);
+        g.E(0x50, 0x8D, 0x41, 0xFF);
+        g.E(0x6B, 0xC0, 0x1E, 0x33, 0xD2, 0xF7, 0x35); g.D(fpsVa);
+        g.E(0x5A, 0x59, 0x3B, 0xC2); g.J(0x75, "run");
+        g.E(0xC3);
+        g.L("run");
+        for (int i = 0; i < s.Copy; i++) g.E(img[f + i]);
+        g.Rel(0xE9, s.Fn + (uint)s.Copy);
+        Write(proc, stubVa, g.Done(0x60));
+        var p = new List<byte> { 0xE9 }; p.AddRange(BitConverter.GetBytes(stubVa - (s.Fn + 5)));
+        while (p.Count < s.Copy) p.Add(0x90);
+        Write(proc, s.Fn, p.ToArray());
     }
 
     // tw/kw drawable fade/blend (0x4809DB in tw 1.10): runs once per drawn frame (it also steps a phase by the real
