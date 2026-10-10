@@ -94,7 +94,8 @@ static class Program
     static uint realClockFn;   // set by PatchScheduler when the effects real clock is on
     static uint newTickFlag, modeCheckFn;   // batches: the "new tick?" flag and the engine function
     static bool realclockOpt;
-    static int shadowMapOpt;   // shadowmap=4096 / 8192
+    static int shadowMapOpt;   // shadowmap=4096 / 8192 / 16384
+    static float zoomInOpt = 1f;   // zoomin=0.25..1, 1 = off
 
     // crcdump=1
     static void CrcDump(string dir)
@@ -163,13 +164,14 @@ static class Program
             if (fps < 30 || fps > 240 || fps % 15 != 0) fps = 120;
             float zoom; if (!float.TryParse(ReadIni(ini, "zoom"), System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out zoom) || zoom < 1f || zoom > 3f) zoom = 1f;
             zoom = Math.Min(zoom, 1.5f);   // further out the ground/water stops drawing at the top
+            float zi; zoomInOpt = float.TryParse(ReadIni(ini, "zoomin"), System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out zi) && zi >= 0.25f && zi < 1f ? zi : 1f;   // extra: min zoom
             int hz = MonitorHz();
             if (hz >= 30 && fps > hz / 15 * 15) fps = Math.Max(30, hz / 15 * 15);
             img = MapImage(File.ReadAllBytes(exe));
             skip = (ReadIni(ini, "skip") ?? "").ToLowerInvariant();
             realclockOpt = ReadIni(ini, "realclock") == "1";   // effects on real time: opt-in until its crash is found
             offscreenAnim = ReadIni(ini, "offscreenanim") == "1";
-            int sm; shadowMapOpt = int.TryParse(ReadIni(ini, "shadowmap"), out sm) && (sm == 4096 || sm == 8192) ? sm : 0;   // extra: shadow map size
+            int sm; shadowMapOpt = int.TryParse(ReadIni(ini, "shadowmap"), out sm) && (sm == 4096 || sm == 8192 || sm == 16384) ? sm : 0;   // extra: shadow map size
             // bfme2: same engine family, its own code shapes (cdq/idiv), so its own path
             BfmeSites bfme = Scan(img, FrameMsSig).Count == 0 ? FindBfme(img) : null;
             if (bfme != null)
@@ -187,7 +189,7 @@ static class Program
             if (pacing.Count > 0 && BitConverter.ToUInt32(Read(proc, pacing[0], 4), 0) != BitConverter.ToUInt32(img, (int)(pacing[0] - ImageBase)))
                 return 2;
             ApplyPatches(proc, img, fps, zoom, true, null, false);
-            WriteLog(dir, DateTime.Now + "  SAGE Unlocked " + Version + ", " + how + ", fps=" + fps + ", zoom=" + zoom +
+            WriteLog(dir, DateTime.Now + "  SAGE Unlocked " + Version + ", " + how + ", fps=" + fps + ", zoom=" + zoom + (zoomInOpt < 1f ? ", zoomin=" + zoomInOpt : "") +
                 (skip != "" ? ", skip=" + skip : "") + ", exe=" + Path.GetFileName(exe) + "\r\n" + found + "\r\n" + patched + "\r\n");
             return 1;
         }
@@ -282,7 +284,7 @@ static class Program
         HeldCamera held = FindHeldCamera(img);
         Cnc3Fx fx = FindCnc3Fx(img, modelStep);
         TracerSites tracers = FindTracers(img);   // tw/kw
-        ShadowSites shadowSites = FindShadowMap(img);   // ra3 (extra)
+        ShadowSites shadowSites = FindShadowMap(img);   // extra
         uint envUpdate = FindUnique(img, EnvUpdatePattern);   // tw/kw
         uint trailLock = FindTrailLock(img);
         SwaySite sway = FindSway(img);
@@ -347,6 +349,7 @@ static class Program
         }
         else Redirect(proc, sites, (uint)mem);
         if (On("zoom") && zoom > 1f && zoomSite != 0) PatchZoom(proc, zoomSite, netObject, zoom, (uint)mem + 0x98, (uint)mem + 0x4A0);
+        if (On("zoomin") && zoomInOpt < 1f && zoomSite != 0 && ZoomMinOk(img, zoomSite)) PatchZoomIn(proc, zoomSite + 0x16, netObject, zoomInOpt, (uint)mem + 0x1840, (uint)mem + 0x1850);   // +1840h..+1880h
         if (shadowMapOpt > 0 && shadowSites != null && On("shadowmap")) PatchShadowMap(proc, shadowSites, shadowMapOpt);   // extra
         if (On("fades") && fades.Count > 0) PatchFadeFrameReads(proc, img, fades, (uint)mem, (uint)mem + 0x440);
         if (On("scroll") && scrollSlot != 0 && fps > 30) PatchScrollBy(proc, scrollSlot, scrollFunc, fps, (uint)mem + 0x4F0, (uint)mem + 0x4F8, (uint)mem + 0x3C0);
@@ -892,6 +895,32 @@ static class Program
         Protect(proc, (IntPtr)site, (UIntPtr)10, old, out old);
     }
 
+    // zoomin extra: the same clamp(zoom, min, max) (ra3 1.13 0x4D81E0) takes min from slot 0 of the
+    // limits object; it's stored at +16h from the zoom site (sub esp,8 / fstp [esp+4]). multiply it there
+    static bool ZoomMinOk(byte[] img, uint site)
+    {
+        int o = (int)(site + 0x16 - ImageBase);
+        return img.Skip(o).Take(7).SequenceEqual(new byte[] { 0x83, 0xEC, 0x08, 0xD9, 0x5C, 0x24, 0x04 });
+    }
+
+    static void PatchZoomIn(IntPtr proc, uint site, uint netObject, float factor, uint factorVa, uint stubVa)
+    {
+        Write(proc, factorVa, BitConverter.GetBytes(factor));
+        var s = new Asm(stubVa);
+        s.E(0x83, 0x3D); s.D(netObject); s.E(0x00); s.J(0x75, "online");
+        s.E(0xD8, 0x0D); s.D(factorVa);                              // fmul [factor], st0 = min zoom
+        s.L("online");
+        s.E(0x83, 0xEC, 0x08, 0xD9, 0x5C, 0x24, 0x04);               // original code
+        s.Rel(0xE9, site + 7);
+        Write(proc, stubVa, s.Done(0x30));
+        var p = new List<byte> { 0xE9 }; p.AddRange(BitConverter.GetBytes(stubVa - (site + 5))); p.AddRange(new byte[] { 0x90, 0x90 });
+        uint old;
+        if (!Protect(proc, (IntPtr)site, (UIntPtr)7, PAGE_EXECUTE_READWRITE, out old))
+            throw new Exception("couldn't unprotect game memory");
+        Write(proc, site, p.ToArray());
+        Protect(proc, (IntPtr)site, (UIntPtr)7, old, out old);
+    }
+
     // held camera keys
     const string HeldZoomPattern = "80 7C 24 08 00 74 10 8B 0D ?? ?? ?? ?? 8B 01 8B 90 ?? ?? 00 00 FF D2 C2 10 00";
     const string ViewZoomInPattern = "56 8B F1 57 8B 3E 8B 87 ?? ?? 00 00 FF D0 D8 0D ?? ?? ?? ?? 8B 97 ?? ?? 00 00 51 D8 25 ?? ?? ?? ?? 8B CE D9 1C 24 FF D2 5F 5E C3";
@@ -1084,12 +1113,21 @@ static class Program
     // extra (shadowmap=4096 / 8192)
     const string ShadowSetterPattern = "83 BA F0 02 00 00 04 B8 ?? ?? ?? ?? 7C 12 81 F9 00 08 00 00 7F 0A C7 05 ?? ?? ?? ?? 00 08 00 00";
     const string ShadowUpdatePattern = "83 B8 F0 02 00 00 04 7C 13 B9 00 08 00 00 39 0D ?? ?? ?? ?? 7F 06 89 0D";
-    class ShadowSites { public uint Setter, Update; }
+    // tw/kw: 4096 only when a flag is set: cmp flag,0 / je +0A / mov dword [size],1000h (two places)
+    const string Cnc3ShadowUpdatePattern = "38 98 ?? ?? 00 00 74 0A C7 05 ?? ?? ?? ?? 00 10 00 00";
+    const string Cnc3ShadowSetterPattern = "80 B9 ?? ?? 00 00 00 74 0A C7 05 ?? ?? ?? ?? 00 10 00 00";
+    class ShadowSites { public uint Setter, Update; public bool Cnc3; }
 
     static ShadowSites FindShadowMap(byte[] img)
     {
         uint s = FindUnique(img, ShadowSetterPattern), u = FindUnique(img, ShadowUpdatePattern);
-        if (s == 0 || u == 0) return null;
+        if (s == 0 || u == 0)
+        {
+            s = FindUnique(img, Cnc3ShadowSetterPattern); u = FindUnique(img, Cnc3ShadowUpdatePattern);
+            if (s == 0 || u == 0) return null;
+            uint a = BitConverter.ToUInt32(img, (int)(s - ImageBase) + 11), b = BitConverter.ToUInt32(img, (int)(u - ImageBase) + 10);
+            return a == b ? new ShadowSites { Setter = s + 7, Update = u + 6, Cnc3 = true } : null;   // the je
+        }
         // both write the same size global
         uint g1 = BitConverter.ToUInt32(img, (int)(s - ImageBase) + 24), g2 = BitConverter.ToUInt32(img, (int)(u - ImageBase) + 16);
         return g1 == g2 && g1 == BitConverter.ToUInt32(img, (int)(u - ImageBase) + 24) ? new ShadowSites { Setter = s, Update = u } : null;
@@ -1098,6 +1136,11 @@ static class Program
     static void PatchShadowMap(IntPtr proc, ShadowSites t, int size)
     {
         byte[] n = BitConverter.GetBytes((uint)size);
+        if (t.Cnc3)
+        {
+            foreach (uint je in new[] { t.Setter, t.Update }) { Write(proc, je + 8, n); Write(proc, je, new byte[] { 0x90, 0x90 }); }   // always n
+            return;
+        }
         Write(proc, t.Setter + 6, new byte[] { 0 });    // shadow setting >= 0
         Write(proc, t.Setter + 16, n);                   // cmp ecx,n
         Write(proc, t.Setter + 28, n);                   // mov dword [size],n

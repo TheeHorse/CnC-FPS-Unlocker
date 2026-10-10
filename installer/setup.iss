@@ -41,9 +41,9 @@ Source: "{#Files}\RA3HighFps.exe"; Flags: dontcopy
 var
   GamePage: TWizardPage;
   GameList: TNewCheckListBox;
-  FpsBox, ZoomBox, ShadowBox: TNewComboBox;
-  ZoomCheck, ShadowCheck: TNewCheckBox;
-  ShadowVal: String;
+  FpsBox, ZoomBox, ZoomInBox, ShadowBox: TNewComboBox;
+  ZoomCheck, ZoomInCheck, ShadowCheck: TNewCheckBox;
+  ShadowVal, ZoomInVal: String;
   GameNames, GameDirs: array of String;
   Done: String;
   OldLauncher: Boolean;
@@ -334,6 +334,11 @@ begin
   ZoomBox.Enabled := ZoomCheck.Checked;
 end;
 
+procedure ZoomInCheckClick(Sender: TObject);
+begin
+  ZoomInBox.Enabled := ZoomInCheck.Checked;
+end;
+
 procedure ShadowCheckClick(Sender: TObject);
 begin
   ShadowBox.Enabled := ShadowCheck.Checked;
@@ -437,10 +442,35 @@ begin
   end;
   ZoomBox.Enabled := ZoomCheck.Checked;
 
+  ZoomInCheck := TNewCheckBox.Create(GamePage);
+  ZoomInCheck.Parent := GamePage.Surface;
+  ZoomInCheck.Caption := 'Red Alert 3: let the camera zoom in closer';
+  ZoomInCheck.SetBounds(0, ZoomCheck.Top + ZoomCheck.Height + ScaleY(12), GamePage.SurfaceWidth - ScaleX(90), ScaleY(17));
+  ZoomInCheck.OnClick := @ZoomInCheckClick;
+
+  ZoomInBox := TNewComboBox.Create(GamePage);
+  ZoomInBox.Parent := GamePage.Surface;
+  ZoomInBox.Style := csDropDownList;
+  ZoomInBox.SetBounds(GamePage.SurfaceWidth - ScaleX(80), ZoomInCheck.Top - ScaleY(3), ScaleX(80), ScaleY(23));
+  ZoomInBox.Items.Add('0.75x');
+  ZoomInBox.Items.Add('0.5x');
+  ZoomInBox.ItemIndex := 1;
+  for i := 0 to GetArrayLength(GameDirs) - 1 do
+  begin
+    z := ReadIni(IniPath(GameDirs[i]), 'zoomin');
+    if (z = '0.75') or (z = '0.5') then
+    begin
+      ZoomInCheck.Checked := True;
+      if z = '0.75' then ZoomInBox.ItemIndex := 0;
+      break;
+    end;
+  end;
+  ZoomInBox.Enabled := ZoomInCheck.Checked;
+
   ShadowCheck := TNewCheckBox.Create(GamePage);
   ShadowCheck.Parent := GamePage.Surface;
   ShadowCheck.Caption := 'Sharper shadows, experimental (uses more video memory)';
-  ShadowCheck.SetBounds(0, ZoomCheck.Top + ZoomCheck.Height + ScaleY(12), GamePage.SurfaceWidth - ScaleX(90), ScaleY(17));
+  ShadowCheck.SetBounds(0, ZoomInCheck.Top + ZoomInCheck.Height + ScaleY(12), GamePage.SurfaceWidth - ScaleX(90), ScaleY(17));
   ShadowCheck.OnClick := @ShadowCheckClick;
 
   ShadowBox := TNewComboBox.Create(GamePage);
@@ -449,14 +479,16 @@ begin
   ShadowBox.SetBounds(GamePage.SurfaceWidth - ScaleX(80), ShadowCheck.Top - ScaleY(3), ScaleX(80), ScaleY(23));
   ShadowBox.Items.Add('4096');
   ShadowBox.Items.Add('8192');
+  ShadowBox.Items.Add('16384');
   ShadowBox.ItemIndex := 0;
   for i := 0 to GetArrayLength(GameDirs) - 1 do
   begin
     z := ReadIni(IniPath(GameDirs[i]), 'shadowmap');
-    if (z = '4096') or (z = '8192') then
+    if (z = '4096') or (z = '8192') or (z = '16384') then
     begin
       ShadowCheck.Checked := True;
       if z = '8192' then ShadowBox.ItemIndex := 1;
+      if z = '16384' then ShadowBox.ItemIndex := 2;
       break;
     end;
   end;
@@ -487,11 +519,12 @@ begin
   if not FileExists(ini) then
   begin
     SetArrayLength(lines, 1);
-    lines[0] := '; SAGE Unlocked settings (fps: multiple of 15, 30-240; zoom: ra3 only, 1 = off; shadowmap: 4096 or 8192, 0 = off)';
+    lines[0] := '; SAGE Unlocked settings (fps: multiple of 15, 30-240; zoom / zoomin: ra3 only, 1 = off; shadowmap: 4096, 8192 or 16384, 0 = off)';
     SaveStringsToFile(ini, lines, False);
   end;
   SetIni(ini, 'fps', IntToStr(fps));
   SetIni(ini, 'zoom', zoom);
+  SetIni(ini, 'zoomin', ZoomInVal);
   SetIni(ini, 'shadowmap', ShadowVal);
   Result := True;
 end;
@@ -553,6 +586,12 @@ begin
     case ZoomBox.ItemIndex of
       0: zoom := '1.25';
       1: zoom := '1.5';
+    end;
+  ZoomInVal := '1';
+  if ZoomInCheck.Checked then
+    case ZoomInBox.ItemIndex of
+      0: ZoomInVal := '0.75';
+      1: ZoomInVal := '0.5';
     end;
   ShadowVal := '0';
   if ShadowCheck.Checked then ShadowVal := ShadowBox.Items[ShadowBox.ItemIndex];
