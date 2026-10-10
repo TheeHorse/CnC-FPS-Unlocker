@@ -379,7 +379,9 @@ static class Program
         if (On("scroll") && scrollSlot != 0 && fps > 30) PatchScrollBy(proc, scrollSlot, scrollFunc, fps, (uint)mem + 0x4F0, (uint)mem + 0x4F8, (uint)mem + 0x3C0);
         if (On("interp") && interpWindow.Count > 0) PatchInterpWindow(proc, interpWindow, fps);
         if (On("camerakeys") && held != null && fps > 30) PatchHeldCamera(proc, img, held, fps, (uint)mem + 0xC00, (uint)mem + 0xC40);
-        if (sched) PatchScheduler(proc, img, schedSite, (uint)mem, (uint)mem, On("batches"));
+        // drawn interp steps on the effect clock within a tick (the clock fix makes it exact 1000/fps steps)
+        uint frameClock = On("frameinterp") && On("clock") && clock != null && fps > 30 ? clock.Clock : 0;
+        if (sched) PatchScheduler(proc, img, schedSite, (uint)mem, (uint)mem, On("batches"), frameClock, fps);
         if (On("limiter") && limiter != 0) PatchLimiterRounding(proc, limiter, limiterRA3, (uint)mem + 0x28, (uint)mem + 0x2C, (uint)mem + 0x280);
         if (On("construction") && unpack != 0) PatchUnpack(proc, img, unpack, (uint)mem + 0x200, sched ? (uint)mem + 0x3C : 0, (uint)mem + 0x4E0);   // construction
         if (On("anim2d") && anim2d.Count > 0) PatchAnim2D(proc, img, anim2d, (uint)mem, (uint)mem + 0x100);
@@ -1345,7 +1347,7 @@ static class Program
         s.FfGlobal = hits[0].Item1; s.FfOff = hits[0].Item2;
     }
 
-    static void PatchScheduler(IntPtr proc, byte[] img, SchedSite site, uint fpsVa, uint mem, bool batches = false)
+    static void PatchScheduler(IntPtr proc, byte[] img, SchedSite site, uint fpsVa, uint mem, bool batches = false, uint frameClock = 0, int fps = 0)
     {
         Func<uint, byte[]> u = BitConverter.GetBytes;
         uint eng = mem + 0x3C, r = mem + 0x38, now3 = mem + 0x80, t0 = mem + 0x84, pend = mem + 0x88, k200 = mem + 0x8C;
@@ -1471,13 +1473,43 @@ static class Program
             b.E(0xC6, 0x05); b.D(newTickFlag); b.E(0x01);
             b.L("nonew");
         }
-        b.E(0xA1); b.D(now3); b.E(0x8B, 0xD0, 0x2B, 0x15); b.D(prevNow);   // edx = frame length
-        b.E(0xA3); b.D(prevNow);
-        b.E(0x85, 0xD2); b.J(0x7D, "dpos"); b.E(0x33, 0xD2);
-        b.L("dpos");
-        b.E(0x83, 0xFA, 0x64); b.J(0x7E, "dok"); b.E(0xBA); b.D(100);         // clamp 0..100
-        b.L("dok");
-        b.E(0x2B, 0x05); b.D(t0); b.E(0x03, 0xC2);                           // eax = now - tickStart + frame length
+        if (frameClock != 0 && fps > 0)
+        {
+            // #30: now3 is read when the frame starts, which wobbles by a few ms around the frame limiter's 1000/fps,
+            // and the measured last frame length on top doubled it: interp stepped 0.08..0.20 a frame instead of an
+            // even 0.125 at 120 (logged), so every blended unit sped up and slowed down (ore collector turning on its
+            // platform). now: wall time into the tick once, on the frame the tick starts (t0 moved), then the effect
+            // clock from there (ms + the clock fix's carried remainder in 1/fps ms, so exactly one frame per frame), plus
+            // one frame. logic timing (stub A) is unchanged. own stub (stub B has no room): eax = interp in 1/3 ms
+            uint lastT0 = mem + 0x1770, ibase = mem + 0x1774, w0 = mem + 0x1778, r0 = mem + 0x177C, rem = mem + 0x1600;   // rem: PatchClock
+            uint fi = mem + 0x1780;
+            var f = new Asm(fi);
+            f.E(0xA1); f.D(now3); f.E(0xA3); f.D(prevNow);                   // prevNow = now3 (kept up to date)
+            f.E(0xA1); f.D(t0); f.E(0x3B, 0x05); f.D(lastT0); f.J(0x74, "same");
+            f.E(0xA3); f.D(lastT0);                                          // a tick started: lastT0 = t0
+            f.E(0xA1); f.D(now3); f.E(0x2B, 0x05); f.D(t0); f.E(0xA3); f.D(ibase);   // base = now3 - t0
+            f.E(0xA1); f.D(frameClock); f.E(0xA3); f.D(w0);                  // w0 = clock
+            f.E(0xA1); f.D(rem); f.E(0xA3); f.D(r0);                         // r0 = remainder
+            f.L("same");
+            f.E(0xA1); f.D(frameClock); f.E(0x2B, 0x05); f.D(w0);            // eax = ms since the tick's first frame
+            f.E(0x69, 0xC0); f.D((uint)fps);                                 // * fps
+            f.E(0x03, 0x05); f.D(rem); f.E(0x2B, 0x05); f.D(r0);             // + remainder change = elapsed in 1/fps ms
+            f.E(0x8D, 0x04, 0x40, 0x33, 0xD2, 0xB9); f.D((uint)fps); f.E(0xF7, 0xF1);   // * 3 / fps = 1/3 ms (edx, ecx: stub B saved them)
+            f.E(0x03, 0x05); f.D(ibase);                                     // + base
+            f.E(0x05); f.D((uint)(3000 / fps)); f.E(0xC3);                   // + one frame (1/3 ms) / ret
+            Write(proc, fi, f.Done(0x80));                                   // +1780h..+1800h
+            b.Rel(0xE8, fi);
+        }
+        else
+        {
+            b.E(0xA1); b.D(now3); b.E(0x8B, 0xD0, 0x2B, 0x15); b.D(prevNow);   // edx = frame length
+            b.E(0xA3); b.D(prevNow);
+            b.E(0x85, 0xD2); b.J(0x7D, "dpos"); b.E(0x33, 0xD2);
+            b.L("dpos");
+            b.E(0x83, 0xFA, 0x64); b.J(0x7E, "dok"); b.E(0xBA); b.D(100);         // clamp 0..100
+            b.L("dok");
+            b.E(0x2B, 0x05); b.D(t0); b.E(0x03, 0xC2);                           // eax = now - tickStart + frame length
+        }
         b.E(0x85, 0xC0); b.J(0x7D, "b1"); b.E(0x33, 0xC0);
         b.L("b1");
         b.E(0x3D); b.D((uint)T); b.J(0x7E, "b2"); b.E(0xB8); b.D((uint)T);
