@@ -2072,20 +2072,31 @@ static class Program
     // frame" check, so at 120 the hold was right (fpsframes) but the fade ran 4 calls a frame and with 4x the elapsed
     // count: gone in a blink. now it only runs on drawn frames that start a new 30hz frame, on the 30hz frame, with
     // the stock 30 fps hold (its fps reads are left out of fpsframes)
-    class RadarFade { public uint Fn, Call, Site, Client; public byte Slot; public bool PushEdi; }
+    // the skip path returns like the function does: tw/kw take the fade step as a float on the stack (ret 4), ra3 none.
+    // a plain ret on tw/kw left the float behind, the caller popped it as esi and returned into the heap (crash)
+    class RadarFade { public uint Fn, Call, Site, Client; public byte Slot; public bool PushEdi; public ushort ArgBytes; }
 
     static RadarFade FindRadarFade(byte[] img)
     {
         var r = new RadarFade();
         // tw/kw: push ebp / mov ebp,esp / sub esp,0Ch / push ebx,esi,edi / mov edi,ecx / mov ecx,[client] / mov eax,[ecx] / call [eax+78h] / fild [fps] / mov ebx,eax / mov eax,[fps]
         uint m = FindUnique(img, "55 8B EC 83 EC 0C 53 56 57 8B F9 8B 0D ?? ?? ?? ?? 8B 01 FF 50 78 DB 05 ?? ?? ?? ?? 8B D8 A1");
-        if (m != 0) { r.Fn = m; r.Site = m + 17; r.Client = BitConverter.ToUInt32(img, (int)(m - ImageBase) + 13); r.Slot = 0x78; }
+        if (m != 0)
+        {
+            r.Fn = m; r.Site = m + 17; r.Client = BitConverter.ToUInt32(img, (int)(m - ImageBase) + 13); r.Slot = 0x78; r.ArgBytes = 4;
+            // leave / ret 4 then the next function (+E0h in tw 1.9/1.10, kw 1.2/1.3)
+            int e = (int)(m - ImageBase) + 0xDF;
+            if (!(img[e] == 0xC9 && img[e + 1] == 0xC2 && img[e + 2] == 0x04 && img[e + 3] == 0x00)) return null;
+        }
         else
         {
             // ra3: sub esp,0Ch / push ebp,esi / mov esi,ecx / mov ecx,[client] / mov eax,[ecx] / mov edx,[eax+74h] / push edi / call edx / mov ebp,eax / mov eax,[..]
             m = FindUnique(img, "83 EC 0C 55 56 8B F1 8B 0D ?? ?? ?? ?? 8B 01 8B 50 74 57 FF D2 8B E8 A1");
             if (m == 0) return null;
             r.Fn = m; r.Site = m + 13; r.Client = BitConverter.ToUInt32(img, (int)(m - ImageBase) + 9); r.Slot = 0x74; r.PushEdi = true;
+            // pop edi,esi,ebp / add esp,0Ch / ret (+126h in ra3 1.12/1.13, uprising 1.0/1.1)
+            int e = (int)(m - ImageBase) + 0x120;
+            if (!(img[e] == 0x5F && img[e + 1] == 0x5E && img[e + 2] == 0x5D && img[e + 3] == 0x83 && img[e + 4] == 0xC4 && img[e + 5] == 0x0C && img[e + 6] == 0xC3)) return null;
         }
         int end = TextEnd(img), calls = 0;
         for (int i = 0x1000; i < end - 5; i++)
@@ -2108,7 +2119,7 @@ static class Program
         g.E(0x50, 0x8D, 0x41, 0xFF);
         g.E(0x6B, 0xC0, 0x1E, 0x33, 0xD2, 0xF7, 0x35); g.D(fpsVa);
         g.E(0x5A, 0x59, 0x3B, 0xC2); g.J(0x75, "run");
-        g.E(0xC3);
+        if (r.ArgBytes != 0) { g.E(0xC2); g.E((byte)r.ArgBytes, (byte)(r.ArgBytes >> 8)); } else g.E(0xC3);   // ret n / ret
         g.L("run"); g.Rel(0xE9, r.Fn);
         Write(proc, stubVa, g.Done(0x40));
         Write(proc, r.Call + 1, BitConverter.GetBytes(stubVa - (r.Call + 5)));
