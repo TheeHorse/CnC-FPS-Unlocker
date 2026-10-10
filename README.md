@@ -56,6 +56,7 @@ Tested on the **Steam** versions (RA3 1.13, Uprising, Tiberium Wars 1.10, Kane's
 Stuff that isn't about frame rate. Off unless you turn it on in the setup (or the ini).
 
 - **Camera zoom-out (RA3):** lets you zoom out further (1.25x or 1.5x). Only in skirmish and campaign, online and LAN always use normal zoom so nobody gets an advantage. Further out, the game stops drawing the ground (and water) at the top of the screen on maps with big height differences, so 1.5x is the max.
+- **Sharper shadows (experimental, tested in RA3):** raises the shadow map from the game's 2048 to 4096 or 8192 (`shadowmap=4096` or `8192` in SAGEUnlocked.ini, or pick it in the setup). 8192 uses about 512 MB of video memory.
 
 ## Is it safe?
 

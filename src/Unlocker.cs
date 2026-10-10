@@ -16,7 +16,7 @@ using System.Threading;
 
 static class Program
 {
-    public const string Version = "1.9.7";   // keep in step with installer/setup.iss
+    public const string Version = "1.9.6";   // keep in step with installer/setup.iss
     const uint ImageBase = 0x400000;
 
     // called from inside the game (dll/proxy.c)
@@ -24,7 +24,7 @@ static class Program
     {
         int r = Patch(IntPtr.Zero, Process.GetCurrentProcess().MainModule.FileName, dir, "drop-in DLL");
         if (r == 1 && ReadIni(IniFile(dir), "crcdump") == "1") new Thread(() => CrcDump(dir)) { IsBackground = true }.Start();
-        // particle shaders (#29): only from inside the game, the shaders are edited as the game creates them
+        // particle shaders
         if (r == 1 && pfxShaderGame && patchFps > 30 && On("pfxshader"))
         {
             string err;
@@ -37,23 +37,10 @@ static class Program
     static int patchFps;   // for the particle shader edit, set by ApplyPatches
     static bool clockFixed;   // the effect clock runs at real speed (PatchClock)
 
-    // how far past its lifetime a gpu particle stays (30 fps frames), shader and removal alike. stock checks once per
-    // 30 fps frame, so a particle shows for its lifetime + 1 frame of screen time. a glow that respawns every lifetime+1
-    // frames then has its old particle gone exactly when the new one comes: no gap, no overlap. with the clock at real
-    // speed the respawn comes at age lifetime+1 exactly, so anything in [1 - 30/fps, 1) keeps that; the middle leaves
-    // room for the 30 hz updates landing a drawn frame early or late (75, 135 fps). without the clock fix the clock runs
-    // slow (1000/fps truncated) and only the low end fits short glows
+    // how far past its lifetime a gpu particle stays
     static float PfxSlack(int fps) { return clockFixed ? 1f - 15f / fps : 1f - 30f / fps; }
 
-    // effect clock: the w3d client clock (particles, model animation, shader Time) goes up by frameMs = 1000 / fps
-    // once per drawn frame, an integer set once at startup: 13 at 75 fps, so it ran at 975 ms a second while the 30 hz
-    // particle updates went by real time. a glow that respawns every 16 updates with a 15 frame lifetime (soviet
-    // reactor) met its old particle at age 15.6 instead of stock's 15.84: a 1 frame gap without the shader slack, a
-    // 1 frame double (bright flash) with it. the clock now adds 1000 / fps with the remainder carried (13, 13, 14 ...)
-    //   init:     mov eax,1000 / xor edx,edx / div [render] / mov [frameMs],eax / ret
-    //   per frame: mov eax,[clock] / add eax,[frameMs] / push eax / mov [clock],eax / call     (add -> call stub)
-    //   catch-up:  mov ecx,[frameMs] / mov eax,[clock] / imul ecx,esi / add eax,ecx / push eax / mov [clock],eax
-    //   tw/kw catch-up: mov eax,[frameMs] / imul eax,esi / add [clock],eax / push [clock]     (first 8 bytes -> call stub)
+    // effect clock
     class ClockSites { public uint Add, CatchUp, Clock; public bool Cnc3; }
 
     static ClockSites FindClockAdvance(byte[] img, uint render)
@@ -87,7 +74,7 @@ static class Program
         Write(proc, c.Add, new byte[] { 0xE8 }.Concat(BitConverter.GetBytes(s1 - (c.Add + 5))).Concat(new byte[] { 0x90 }).ToArray());
         if (c.Cnc3)
         {
-            // tw/kw catch-up for esi frames: eax = (rem + 1000 * esi) / fps, the game's add [clock],eax stays
+            // tw/kw catch-up for esi frames
             var t = new Asm(s2);
             t.E(0x52, 0x69, 0xC6); t.D(1000); t.E(0x03, 0x05); t.D(rem); t.E(0x33, 0xD2, 0xF7, 0x35); t.D(fpsVa);
             t.E(0x89, 0x15); t.D(rem); t.E(0x5A, 0xC3);
@@ -105,12 +92,11 @@ static class Program
     static bool pfxShaderGame;   // the particle removal was found: ra3 / uprising / tw / kw
 
     static uint realClockFn;   // set by PatchScheduler when the effects real clock is on
-    static uint newTickFlag, modeCheckFn;   // batches: the "new tick?" flag and the engine function that now returns it
+    static uint newTickFlag, modeCheckFn;   // batches: the "new tick?" flag and the engine function
     static bool realclockOpt;
+    static int shadowMapOpt;   // shadowmap=4096 / 8192
 
-    // crcdump=1 (ra3 1.12, desync hunting): the game's own deep CRC switch. if the game goes out of sync it then writes
-    // DESYNC-Frame*.txt with everything that went into the last CRCs, so two players' files show what differed. the
-    // flags are set from here, not at patch time, so the game's startup can't clear them again
+    // crcdump=1
     static void CrcDump(string dir)
     {
         try
@@ -129,7 +115,7 @@ static class Program
 
     // ra3 1.12: the CRC send code tests the deep CRC byte right here (cmp byte [0xCE80EB],0)
     const uint CrcDumpFlag = 0xCE80EB;
-    // stock CRCs only every 10th object (and a cheap one in between); off in dump mode so the dump has the first object that differs
+    // stock CRCs only every 10th object
     const uint CrcLiteFlag = 0xCB4634;
     static bool CrcDumpSiteOk()
     {
@@ -138,11 +124,7 @@ static class Program
         return want.SequenceEqual(have);
     }
 
-    // a normal CRC sets xfer flag 8, which makes ~20 xfer functions skip their client-only blocks (fog of war, each pc's
-    // own player view, ...). deep CRC alone leaves it clear, so those blocks went in and the CRC differed on that alone.
-    // so in dump mode: always set flag 8 (nop the je at 0x519D76 that sets it only for normal CRCs), and since flag 8 also
-    // switches the dump to binary, which never gets written out, force text mode where the dump opens (sete dl at
-    // 0xB1EFE4 -> mov dl,1). result: exactly the normal CRC, plus the text of everything in it
+    // a normal CRC sets xfer flag 8
     static bool CrcDumpKeepLite()
     {
         var patches = new[] {
@@ -165,8 +147,7 @@ static class Program
         try { File.AppendAllText(Path.Combine(dir, LogName), text); } catch { }
     }
 
-    // RA3HighFps.exe on linux (proton's .net runs exes but the dll can't host it): game started suspended,
-    // same patches from outside. dir = the game exe's folder, where the dll and ini are
+    // RA3HighFps.exe on linux
     internal static int Launch(IntPtr proc, string exe, string dir)
     {
         return Patch(proc, exe, dir, "RA3HighFps.exe");
@@ -181,13 +162,14 @@ static class Program
             int fps = ReadIniFps(ini, 120);
             if (fps < 30 || fps > 240 || fps % 15 != 0) fps = 120;
             float zoom; if (!float.TryParse(ReadIni(ini, "zoom"), System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out zoom) || zoom < 1f || zoom > 3f) zoom = 1f;
-            zoom = Math.Min(zoom, 1.5f);   // further out the ground/water stops drawing at the top on hilly maps (#10)
+            zoom = Math.Min(zoom, 1.5f);   // further out the ground/water stops drawing at the top
             int hz = MonitorHz();
             if (hz >= 30 && fps > hz / 15 * 15) fps = Math.Max(30, hz / 15 * 15);
             img = MapImage(File.ReadAllBytes(exe));
             skip = (ReadIni(ini, "skip") ?? "").ToLowerInvariant();
             realclockOpt = ReadIni(ini, "realclock") == "1";   // effects on real time: opt-in until its crash is found
             offscreenAnim = ReadIni(ini, "offscreenanim") == "1";
+            int sm; shadowMapOpt = int.TryParse(ReadIni(ini, "shadowmap"), out sm) && (sm == 4096 || sm == 8192) ? sm : 0;   // extra: shadow map size
             // bfme2: same engine family, its own code shapes (cdq/idiv), so its own path
             BfmeSites bfme = Scan(img, FrameMsSig).Count == 0 ? FindBfme(img) : null;
             if (bfme != null)
@@ -199,7 +181,7 @@ static class Program
                     " (bfme2)\r\n" + found + "\r\n" + patched + "\r\n");
                 return 1;
             }
-            // already patched (old v1.6 launcher still set as the steam launch option, or RA3HighFps.exe got there first)
+            // already patched
             uint render = FindRenderFps(img);
             List<uint> pacing = FindPacingSites(img, render, render - 4);
             if (pacing.Count > 0 && BitConverter.ToUInt32(Read(proc, pacing[0], 4), 0) != BitConverter.ToUInt32(img, (int)(pacing[0] - ImageBase)))
@@ -218,9 +200,7 @@ static class Program
         }
     }
 
-    // %TEMP%\SAGEUnlocked.log, and a copy next to the game where people look first (may be read-only, then just temp).
-    // the drop-in dll (d3d9.dll / dinput8.dll) still writes its own lines (.NET start failures,
-    // crashes) to RA3HighFps.log, so that one stays
+    // %TEMP%\SAGEUnlocked.log
     const string LogName = "SAGEUnlocked.log";
     static void WriteLog(string dir, string text)
     {
@@ -228,7 +208,7 @@ static class Program
         try { File.WriteAllText(Path.Combine(dir, LogName), text); } catch { }
     }
 
-    // SAGEUnlocked.ini (called RA3HighFps.ini up to 1.9.4: still read if it's the only one there, e.g. copied in by hand)
+    // SAGEUnlocked.ini
     static string IniFile(string dir)
     {
         string ini = Path.Combine(dir, "SAGEUnlocked.ini"), old = Path.Combine(dir, "RA3HighFps.ini");
@@ -275,10 +255,10 @@ static class Program
 
     // ini skip=fades,interp,... turns single fixes off (for tracking down problems with mods)
     static string skip = "", found = "", patched = "";
-    static bool offscreenAnim = false;   // ini offscreenanim=1: #13 experiment, off by default (didn't make off-screen shadows smooth)
+    static bool offscreenAnim = false;   // ini offscreenanim=1
     static bool On(string name) { return !skip.Split(',').Select(s => s.Trim()).Contains(name); }
 
-    // proc isn't used, it's always our own process (kept so the patch functions read the same as before)
+    // proc isn't used
     static List<uint> ApplyPatches(IntPtr proc, byte[] img, int fps, float zoom, bool throttlePfx, string extra, bool ticks)
     {
         newTickFlag = 0; modeCheckFn = 0;
@@ -302,6 +282,7 @@ static class Program
         HeldCamera held = FindHeldCamera(img);
         Cnc3Fx fx = FindCnc3Fx(img, modelStep);
         TracerSites tracers = FindTracers(img);   // tw/kw
+        ShadowSites shadowSites = FindShadowMap(img);   // ra3 (extra)
         uint trailLock = FindTrailLock(img);
         SwaySite sway = FindSway(img);
         Cnc3SwaySite sway3 = sway == null ? FindCnc3Sway(img) : null;   // tw/kw
@@ -312,7 +293,7 @@ static class Program
         RadarFade radarFade = FindRadarFade(img);
         List<uint> drawFade = FindDrawableFadeFps(img, render);
         List<uint> elapsed = FindElapsedSites(img);
-        // the radar fade runs on the 30hz frame with the stock 30 fps hold, so its hold reads stay at 30
+        // the radar fade runs on the 30hz frame with the stock 30 fps hold
         if (radarFade != null && On("radarfade")) fpsFrames.RemoveAll(a => a >= radarFade.Fn && a < radarFade.Fn + 0x80);
         Blinks blinks = FindBlinks(img);
         PulseSite pulse = FindPulse(img);
@@ -330,31 +311,21 @@ static class Program
             new { n = "anim2d", ok = anim2d.Count > 0 }, new { n = "models", ok = modelStep != 0 }, new { n = "particles", ok = pfxSite != 0 },
             new { n = "fades", ok = fades.Count > 0 || fx.Fades.Count > 0 }, new { n = "zoom", ok = zoomSite != 0 },
             new { n = "camsteps", ok = fx.CameraStep != 0 }, new { n = "fxframes", ok = fx.Frame5.Count > 0 }, new { n = "throb", ok = fx.Throb != 0 },
-            new { n = "shake", ok = fx.Shake != 0 }, new { n = "traillock", ok = trailLock != 0 }, new { n = "sway", ok = sway != null || sway3 != null }, new { n = "stream", ok = stream != 0 }, new { n = "audio", ok = audioSlot != 0 }, new { n = "floattext", ok = floatText != null }, new { n = "fpsframes", ok = fpsFrames.Count > 0 }, new { n = "blinks", ok = blinks.Sites.Count > 0 }, new { n = "tint", ok = blinks.Tint.Count > 0 }, new { n = "modeltimer", ok = blinks.TimerUpdate != 0 }, new { n = "glow", ok = glow != null }, new { n = "pfxcull", ok = pfxCull != null }, new { n = "clock", ok = clock != null }, new { n = "radarfade", ok = radarFade != null }, new { n = "drawfade", ok = drawFade.Count > 0 }, new { n = "fxdelays", ok = elapsed.Count > 0 }, new { n = "pulse", ok = pulse != null }, new { n = "turrets", ok = turretSite != null }, new { n = "topple", ok = topple != null }, new { n = "offscreenanim", ok = animGate != 0 }, new { n = "tracers", ok = tracers != null } };
+            new { n = "shake", ok = fx.Shake != 0 }, new { n = "traillock", ok = trailLock != 0 }, new { n = "sway", ok = sway != null || sway3 != null }, new { n = "stream", ok = stream != 0 }, new { n = "audio", ok = audioSlot != 0 }, new { n = "floattext", ok = floatText != null }, new { n = "fpsframes", ok = fpsFrames.Count > 0 }, new { n = "blinks", ok = blinks.Sites.Count > 0 }, new { n = "tint", ok = blinks.Tint.Count > 0 }, new { n = "modeltimer", ok = blinks.TimerUpdate != 0 }, new { n = "glow", ok = glow != null }, new { n = "pfxcull", ok = pfxCull != null }, new { n = "clock", ok = clock != null }, new { n = "radarfade", ok = radarFade != null }, new { n = "drawfade", ok = drawFade.Count > 0 }, new { n = "fxdelays", ok = elapsed.Count > 0 }, new { n = "pulse", ok = pulse != null }, new { n = "turrets", ok = turretSite != null }, new { n = "topple", ok = topple != null }, new { n = "offscreenanim", ok = animGate != 0 }, new { n = "tracers", ok = tracers != null }, new { n = "shadowmap", ok = shadowSites != null } };
         found = "found: " + string.Join(" ", have.Where(h => h.ok).Select(h => h.n)) + " | missing: " + string.Join(" ", have.Where(h => !h.ok).Select(h => h.n));
 
-        // +0 fps, +8 particle accum, +40 stubs. the first page is full, newer things go in the second (+1000 and up)
+        // +0 fps, +8 particle accum
         IntPtr mem = Alloc(proc, 0x2000);
         if (mem == IntPtr.Zero) throw new Exception("couldn't allocate patch memory");
         patchMem = (uint)mem; patchMemSize = 0x2000; memWrites.Clear(); memOverlaps.Clear();
         Write(proc, (uint)mem, BitConverter.GetBytes(fps));
         if (sched)
         {
-            // scheduler does the timing now. the two phase-ratio reads (dispatcher + tick boundary) get stock's 30 fps ratio
-            // so the dispatcher runs each tick as stock does, phases 1-3 in one go and 4-6 in one go: the logic then runs in
-            // the same order with the same steps on every pc whatever the fps (online desyncs). skip=batches: old path,
-            // one phase per call (max(fps, 90))
+            // scheduler does the timing now
             List<uint> ratio = sites.Where(s => IsPhaseRatioSite(img, s)).ToList();
             int logicFps = BitConverter.ToInt32(img, (int)(render - 4 - ImageBase));
             if (logicFps <= 0 || logicFps > 30) logicFps = 15;
-            // only the dispatcher's read gets the stock ratio. the other one starts the engine's "did a new tick just run?"
-            // function (its fps read is the first instruction): ratio < 6 -> phase == 6 / ratio, else phase == 1. the
-            // drawable loop copies object state into drawables only when it says yes, the net speed regulator and a
-            // cleanup pass run on it too. with batches the phase is never 1 when anyone asks (1-3 run in one call), so
-            // forcing the high-fps branch made it always no (1.9.4: units drawn stale or not at all, enemies seen in fog,
-            // late units). batches: it says yes from the frame a tick starts until the next engine update, once per
-            // tick like stock at 30 fps (flag set by the scheduler's exit stub)
-            // (ra3 pads before it, tw/kw put it right after the previous function, so: something calls it)
+            // only the dispatcher's read gets the stock ratio
             List<uint> modeCheck = ratio.Where(s => img[(int)(s - 1 - ImageBase)] == 0xA1 && (img[(int)(s - 2 - ImageBase)] == 0xCC || IsCallTarget(img, s - 1))).ToList();
             Write(proc, (uint)mem + 0x90, BitConverter.GetBytes(Math.Max(fps, 90)));
             Write(proc, (uint)mem + 0x94, BitConverter.GetBytes(On("batches") ? 2 * logicFps : Math.Max(fps, 90)));
@@ -375,11 +346,12 @@ static class Program
         }
         else Redirect(proc, sites, (uint)mem);
         if (On("zoom") && zoom > 1f && zoomSite != 0) PatchZoom(proc, zoomSite, netObject, zoom, (uint)mem + 0x98, (uint)mem + 0x4A0);
+        if (shadowMapOpt > 0 && shadowSites != null && On("shadowmap")) PatchShadowMap(proc, shadowSites, shadowMapOpt);   // extra
         if (On("fades") && fades.Count > 0) PatchFadeFrameReads(proc, img, fades, (uint)mem, (uint)mem + 0x440);
         if (On("scroll") && scrollSlot != 0 && fps > 30) PatchScrollBy(proc, scrollSlot, scrollFunc, fps, (uint)mem + 0x4F0, (uint)mem + 0x4F8, (uint)mem + 0x3C0);
         if (On("interp") && interpWindow.Count > 0) PatchInterpWindow(proc, interpWindow, fps);
         if (On("camerakeys") && held != null && fps > 30) PatchHeldCamera(proc, img, held, fps, (uint)mem + 0xC00, (uint)mem + 0xC40);
-        // drawn interp steps on the effect clock within a tick (the clock fix makes it exact 1000/fps steps)
+        // drawn interp steps on the effect clock within a tick
         uint frameClock = On("frameinterp") && On("clock") && clock != null && fps > 30 ? clock.Clock : 0;
         if (sched) PatchScheduler(proc, img, schedSite, (uint)mem, (uint)mem, On("batches"), frameClock, fps);
         if (On("limiter") && limiter != 0) PatchLimiterRounding(proc, limiter, limiterRA3, (uint)mem + 0x28, (uint)mem + 0x2C, (uint)mem + 0x280);
@@ -413,8 +385,7 @@ static class Program
         if (On("particles") && throttlePfx && pfxSite != 0) ThrottleParticles(proc, pfxSite, pfxSim, (uint)mem, (uint)mem + 8, (uint)mem + 0x40);
         clockFixed = On("clock") && clock != null && fps > 30;
         if (clockFixed) PatchClock(proc, clock, (uint)mem, (uint)mem + 0x1600);   // +1600h..+1670h
-        // pfxcull: the expired-particle removal reads the time minus the particle shader's slack (see PfxShader), so a
-        // particle isn't dropped before the shader would hide it. mov eax,[time] / sub eax,slack / ret
+        // pfxcull: the expired-particle removal reads the time minus the particle shader's slack
         if (On("pfxcull") && pfxCull != null && fps > 30)
         {
             uint stub = (uint)mem + 0x15C0;
@@ -443,7 +414,7 @@ static class Program
             (stream != 0 ? " | stream " + hex(new[] { stream }) : "") +
             (audioSlot != 0 ? " | audio " + hex(new[] { audioSlot, audioFn }) : "") +
             (floatText != null ? " | floattext " + hex(new[] { floatText.Add, floatText.Update }) : "") +
-            (fpsFrames.Count > 0 ? " | fpsframes " + hex(fpsFrames) : "") + (radarFade != null ? " | radarfade " + hex(new[] { radarFade.Call, radarFade.Site }) : "") + (drawFade.Count > 0 ? " | drawfade " + hex(drawFade) : "") + (elapsed.Count > 0 ? " | fxdelays " + hex(elapsed) : "") + (glow != null ? " | glow " + hex(new[] { glow.Fn }) : "") + (pfxCull != null ? " | pfxcull " + hex(new[] { pfxCull.Site, pfxCull.Time }) : "") + (tracers != null ? " | tracers " + hex(new[] { tracers.Gate, tracers.Spawn, tracers.Step, tracers.Spacing, tracers.Bullet }) : "") +
+            (fpsFrames.Count > 0 ? " | fpsframes " + hex(fpsFrames) : "") + (radarFade != null ? " | radarfade " + hex(new[] { radarFade.Call, radarFade.Site }) : "") + (drawFade.Count > 0 ? " | drawfade " + hex(drawFade) : "") + (elapsed.Count > 0 ? " | fxdelays " + hex(elapsed) : "") + (glow != null ? " | glow " + hex(new[] { glow.Fn }) : "") + (pfxCull != null ? " | pfxcull " + hex(new[] { pfxCull.Site, pfxCull.Time }) : "") + (tracers != null ? " | tracers " + hex(new[] { tracers.Gate, tracers.Spawn, tracers.Step, tracers.Spacing, tracers.Bullet }) : "") + (shadowSites != null ? " | shadowmap " + hex(new[] { shadowSites.Setter, shadowSites.Update }) + (shadowMapOpt > 0 ? " = " + shadowMapOpt : " (off)") : "") +
             (blinks.Sites.Count > 0 ? " | blinks " + hex(blinks.Sites) : "") +
             (blinks.Tint.Count > 0 ? " | tint " + hex(blinks.Tint.Concat(new[] { blinks.TintInstall9 }).Concat(blinks.TintLen)) : "") +
             (blinks.TimerUpdate != 0 ? " | modeltimer " + hex(new[] { blinks.TimerInit, blinks.TimerUpdate }) : "") +
@@ -518,8 +489,7 @@ static class Program
     }
 
 
-    // ---- signatures ----
-    // -1 = wildcard, R/L = render_fps / logic_fps addresses
+    // ---- signatures ---- -1 = wildcard
 
     // mov eax,1000 / xor edx,edx / div [render_fps] / mov [frame_ms],eax
     static readonly int[] FrameMsSig = { 0xB8, 0xE8, 0x03, 0x00, 0x00, 0x33, 0xD2, 0xF7, 0x35, -1, -1, -1, -1, 0xA3 };
@@ -531,8 +501,7 @@ static class Program
         return BitConverter.ToUInt32(img, hits[0] + 9);
     }
 
-    // reads of render_fps that do frame pacing. same rules for ra3 and cnc3.
-    // leaves the fps*0.001 framesPerMs init alone, particles use it as a 30hz clock
+    // reads of render_fps that do frame pacing
     static List<uint> FindPacingSites(byte[] img, uint r, uint l)
     {
         int end = TextEnd(img);
@@ -569,7 +538,7 @@ static class Program
                 continue;
             }
 
-            // same thing split up (KW 1.02 retail 2008): mov eax,[fps] / jmp body, body = xor edx,edx / div [logic] ...
+            // same thing split up
             if (img[i - 1] == 0xA1 && img[i + 4] == 0xE9)
             {
                 long t = i + 9L + BitConverter.ToInt32(img, i + 5);
@@ -588,8 +557,7 @@ static class Program
                 continue;
             }
 
-            // static init: push ecx / mov eax,[fps] / fild [fps] / ... / op
-            // take 1000/fps (fdivr) and fps (fstp), skip fmul ones (time units)
+            // static init: push ecx / mov eax,[fps] / fild [fps]
             if (img[i - 2] == 0x51 && img[i - 1] == 0xA1 && img[i + 4] == 0xDB && img[i + 5] == 0x05 && at(i + 6, R)
                 && img[i + 10] == 0x85 && img[i + 12] == 0x7D && img[i + 14] == 0xD8 && img[i + 15] == 0x05)
             {
@@ -612,8 +580,7 @@ static class Program
         return sites;
     }
 
-    // all the other render_fps reads (mostly fild in visual code), minus stuff that has to stay 30:
-    // fps/2, fps/logic, particle clock (call getTime / imul [fps]), time unit inits
+    // all the other render_fps reads
     static List<uint> FindExtraSites(byte[] img, uint r, uint l, List<uint> pacing)
     {
         int end = TextEnd(img);
@@ -676,9 +643,7 @@ static class Program
         return pick;
     }
 
-    // model transitions add 1/30 per drawn frame (addss xmm0,[1/30f]), 4x too fast at 120.
-    // only this read gets moved, the constant is shared (pathfinding uses it too)
-    // found by CNCStuff/cnc3_fps_patch
+    // model transitions add 1/30 per drawn frame
     static uint FindModelTransitionStep(byte[] img)
     {
         int end = TextEnd(img);
@@ -696,8 +661,7 @@ static class Program
         return count == 1 ? hit : 0;
     }
 
-    // 2d sprite anims count drawn frames (made for 30fps), give them a 30hz frame number instead.
-    // found by CNCStuff/cnc3_fps_patch
+    // 2d sprite anims count drawn frames
     static List<uint> FindAnim2DFrameReads(byte[] img)
     {
         int end = TextEnd(img);
@@ -714,8 +678,7 @@ static class Program
             bool set = img[n] == 0x89 && img[n + 1] == 0x46 && img[n + 2] == 0x08;                                  // mov [esi+8],eax
             bool upd = img[n] == 0x2B && img[n + 1] == 0x46 && img[n + 2] == 0x08 && img[n + 3] == 0x3B && img[n + 4] == 0x46 && img[n + 5] == 0x18;
             if (!set && !upd) continue;
-            // the stub calls getFrame on ecx itself, so it has to be mov ecx,[client] / mov r,[ecx] / mov r,[r+74h]
-            // (an unknown build with different code here gets no anim2d fix instead of a crash)
+            // the stub calls getFrame on ecx itself
             bool fromClient = img[i - 8] == 0x8B && img[i - 7] == 0x0D && img[i - 2] == 0x8B && (img[i - 1] & 0xC7) == 0x01
                               && ((img[i - 1] >> 3) & 7) == (img[i + 1] & 7);
             if (!fromClient) return new List<uint>();
@@ -755,9 +718,7 @@ static class Program
         }
     }
 
-    // limiter truncates to whole ms: 120fps -> 8ms = 125fps, ~4% fast. carry the leftover
-    // into the next frame (8,8,9..) so it averages out. ra3 = inline fistp, cnc3 = _ftol
-    // (cnc3 block found by CNCStuff/cnc3_fps_patch)
+    // limiter truncates to whole ms
     const string LimiterPatternRA3 = "D8 3D ?? ?? ?? ?? 2B 05 ?? ?? ?? ?? A3 ?? ?? ?? ?? D9 6C 24 14 DF 7C 24 14 8B 74 24 14 3B C6";
     const string LimiterPatternCnc3 = "3B C8 76 07 C6 05 ?? ?? ?? ?? 00 80 3D ?? ?? ?? ?? 00 74 69 E8 ?? ?? ?? ?? DB 86 64 01 00 00 8B D8 D8 0D ?? ?? ?? ?? D8 3D ?? ?? ?? ?? E8";
 
@@ -817,8 +778,7 @@ static class Program
         Protect(proc, (IntPtr)site, (UIntPtr)p.Count, old, out old);
     }
 
-    // fades (dying units, stealth etc) time themselves with drawn frames -> 4x fast at 120.
-    // same 30hz frame number trick as anim2d, 5 reads
+    // fades
     static readonly string[] FadeFramePatterns = {
         "8B 0D ?? ?? ?? ?? 8B 01 8B 50 74 FF D2 89 86 38 03 00 00",
         "8B 0D ?? ?? ?? ?? 8B 11 8B 42 74 FF D0 89 86 38 03 00 00",
@@ -865,8 +825,7 @@ static class Program
         }
     }
 
-    // scrolling moves a fixed step per frame. everything goes through scrollBy(Coord2D*) so
-    // wrap it in the vtable and scale by 30/fps (same idea as CNCStuff/cnc3_fps_patch)
+    // scrolling moves a fixed step per frame
     const string ScrollByPattern = "A1 ?? ?? ?? ?? 83 EC 60 80 B8 BC 00 00 00 00 56 8B F1 74 06 80 7E 48 00 75 09 80 BE 35 27 00 00 00 74 09 33 C0 5E 83 C4 60 C2 04 00";
 
     const string ScrollByPatternCnc3 = "55 8B EC A1 ?? ?? ?? ?? 83 EC 64 80 B8 CC 00 00 00 00 53 8B D9 74 0D 80 7B 44 00 74 07 33 C0 E9";
@@ -902,8 +861,7 @@ static class Program
         Protect(proc, (IntPtr)slot, (UIntPtr)4, old, out old);
     }
 
-    // zoom extra: multiply the max zoom (550 default) by the ini value.
-    // only when there's no network object so never online/lan
+    // zoom extra: multiply the max zoom
     const string ZoomMaxPattern = "8B 96 FC 26 00 00 8B 42 04 57 8D BE FC 26 00 00 8B CF FF D0 8B 17 8B 02 51 8B CF D9 1C 24 FF D0";
     const string NetObjectPattern = "8B 35 ?? ?? ?? ?? 3B F5 0F 84 ?? ?? ?? ?? 80 3D ?? ?? ?? ?? 00 0F 85 ?? ?? ?? ?? 80 3D ?? ?? ?? ?? 00 0F 85";
 
@@ -932,22 +890,19 @@ static class Program
         Protect(proc, (IntPtr)site, (UIntPtr)10, old, out old);
     }
 
-    // held camera keys (numpad zoom / rotate) do one step per drawn frame, so at 120 fps they went 4x too fast (#15).
-    // zoom: the held-key behaviors call the view's zoomIn/zoomOut (z*0.96 - 1, z*1.05 + 1). they get their own copy
-    // of those two with the step for this fps, the mouse wheel still calls the originals (one full step per notch).
-    // rotate: rate * constant each frame, constant gets * 30/fps. ra3 only for now
+    // held camera keys
     const string HeldZoomPattern = "80 7C 24 08 00 74 10 8B 0D ?? ?? ?? ?? 8B 01 8B 90 ?? ?? 00 00 FF D2 C2 10 00";
     const string ViewZoomInPattern = "56 8B F1 57 8B 3E 8B 87 ?? ?? 00 00 FF D0 D8 0D ?? ?? ?? ?? 8B 97 ?? ?? 00 00 51 D8 25 ?? ?? ?? ?? 8B CE D9 1C 24 FF D2 5F 5E C3";
     const string ViewZoomOutPattern = "56 8B F1 57 8B 3E 8B 87 ?? ?? 00 00 FF D0 D8 0D ?? ?? ?? ?? 8B 97 ?? ?? 00 00 51 D8 05 ?? ?? ?? ?? 8B CE D9 1C 24 FF D2 5F 5E C3";
     const string HeldRotatePattern = "80 7C 24 08 00 74 ?? F3 0F 10 41 04 8B 44 24 10 F3 0F 59 05 ?? ?? ?? ?? F3 0F 58 00 F3 0F 11 00 C2 10 00";
 
-    // tw / kw: same idea, other registers. rotate speed comes from GlobalData instead of a constant
+    // tw / kw: same idea
     const string HeldZoomPatternCnc3 = "80 7C 24 08 00 74 0E 8B 0D ?? ?? ?? ?? 8B 01 FF 90 ?? 01 00 00 C2 10 00";
     const string ViewZoomInPatternCnc3 = "56 57 8B F9 8B 37 FF 96 ?? ?? 00 00 D8 0D ?? ?? ?? ?? 51 8B CF D8 25 ?? ?? ?? ?? D9 1C 24 FF 96 ?? ?? 00 00 5F 5E C3";
     const string ViewZoomOutPatternCnc3 = "56 57 8B F9 8B 37 FF 96 ?? ?? 00 00 D8 0D ?? ?? ?? ?? 51 8B CF D8 05 ?? ?? ?? ?? D9 1C 24 FF 96 ?? ?? 00 00 5F 5E C3";
     const string HeldRotatePatternCnc3 = "80 7C 24 08 00 74 1E A1 ?? ?? ?? ?? F3 0F 10 80 ?? ?? 00 00 8B 44 24 10 F3 0F 59 41 04 F3 0F 58 00 F3 0F 11 00 C2 10 00";
 
-    // Cnc3: tw/kw layout. MOff/COff = where the zoom step's two float operands sit in the view function
+    // Cnc3: tw/kw layout
     class HeldCamera { public uint ZoomIn, ZoomOut, ViewIn, ViewOut, Rotate; public bool Cnc3; public int Len = 43, MOff = 16, COff = 29; }
 
     static List<uint> FindAll(byte[] img, string pattern)
@@ -994,8 +949,7 @@ static class Program
         return table ? h : null;
     }
 
-    // tw / kw effects that count drawn frames (all found by CNCStuff/cnc3_fps_patch, same signatures).
-    // 1/30 per frame steps: camera moves and lasers (same constant as the model step)
+    // tw / kw effects that count drawn frames
     const string CameraStepPattern = "80 BB C8 00 00 00 00 75 6F D9 05 ?? ?? ?? ?? 51";
     const string LaserStepPattern = "0F 2F F1 F3 0F 10 1D ?? ?? ?? ?? F3 0F 2A E0 0F 28 EC F3 0F 59 EB";
     // absolute frame reads (getFrame = slot 78h here) where the art is made in 30fps frames
@@ -1006,18 +960,16 @@ static class Program
     const string Anim2DUpdatePattern = "8B 0D ?? ?? ?? ?? 8B 01 FF 50 78 2B 46 08 3B 46 18";
     // cpu particles step once per call
     const string ParticlePatternCnc3 = "8B F1 E8 ?? ?? ?? ?? 83 66 40 00 6A 02 8D BE 8C 00 00 00 5B FF 77 04 8B CF";
-    // ability placement circles: throb period in ms * 0.03 frames/ms, compared with the drawn frame
+    // ability placement circles
     const string ThrobPattern = "8B 0D ?? ?? ?? ?? 8B 01 57 FF 50 78 8B F8 8B 06 D9 40 14 51 D8 0D ?? ?? ?? ?? 51 DD 1C 24";
     // camera shake: amplitude *= 0.75 every frame
     const string ShakePattern = "A1 ?? ?? ?? ?? 80 B8 44 0F 00 00 00 74 09 80 B8 45 0F 00 00 00 74 22 F3 0F 59 05 ?? ?? ?? ?? F3 0F 11 43 78";
 
-    // drawable fades (ion cannon ripple, dying units etc): start stamped with getFrame, the update adds getFrame - start
-    // to the progress, length in 30fps frames. same as the ra3 fades fix
+    // drawable fades
     const string Cnc3FadeSetPattern = "89 86 20 02 00 00 8B 0D ?? ?? ?? ?? 8B 01 FF 50 78 89 86 54 04 00 00";
     const string Cnc3FadeSet2Pattern = "89 86 24 02 00 00 8B 0D ?? ?? ?? ?? 8B 01 FF 50 78 89 86 54 04 00 00";
     const string Cnc3FadeUpdatePattern = "8B 0D ?? ?? ?? ?? 8B 01 FF 50 78 8B D0 8D 8E 54 04 00 00 2B 11 89 01";
-    // a second drawable timer: value += max(1, frames since last) * rate. the max(1) would still step every drawn
-    // frame, so it becomes max(0, ...) with the 30hz frame (= stock at 30)
+    // a second drawable timer
     const string Cnc3PulseSetPattern = "8B 0D ?? ?? ?? ?? 8B 01 FF 50 78 89 86 58 04 00 00 5E C2 08 00";
     const string Cnc3PulseUpdatePattern = "8B 0D ?? ?? ?? ?? 8B 01 53 FF 50 78 8B C8 2B 8E 58 04 00 00 33 D2 42 3B CA";
 
@@ -1040,7 +992,7 @@ static class Program
         uint p = FindUnique(img, ParticlePatternCnc3);
         if (p != 0) { fx.PfxSite = p + 2; fx.PfxSim = p + 7 + dw(p, 3); }
         uint th = FindUnique(img, ThrobPattern);
-        // framesPerMs: a global set to 0.03 at startup, nothing to check in the file. just make sure it isn't code
+        // framesPerMs: a global set to 0.03 at startup
         if (th != 0 && dw(th, 22) >= ImageBase + (uint)TextEnd(img)) fx.Throb = th + 22;
         // fades: all four or none (mixing clocks breaks the subtraction)
         var fs = FindAll(img, Cnc3FadeSetPattern);
@@ -1053,16 +1005,7 @@ static class Program
         return fx;
     }
 
-    // tw/kw tracers (rifle / mg / gun walker / stormrider shots): W3DTracerManager::update runs when the frame changed,
-    // steps every emitter (moves 0..1 along its path by a fixed step, spawns a random count of bullets spread over
-    // that step) and every bullet (moves by its speed), all per call in 30 fps units. fxframes gave it the 30hz frame:
-    // right speed, but the shots only moved 30 times a second. now it runs every drawn frame, still with the 30hz frame
-    // for the lifetimes, and the four per-call amounts are scaled by 30 / fps (tw 1.10 addresses):
-    //   gate    0x834280  mov eax,[ecx] / push edi / call [eax+78h] / cmp eax,[esi+90h] / je skip
-    //   spawn   0x834099  movss xmm0,[ebp+0Ch] / addss xmm0,[esi+7Ch]      (random count + carried fraction)
-    //   step    0x8340DC  movss xmm0,[ecx+1Ch]                             (emitter progress per call)
-    //   spacing 0x83411C  divss xmm0,[ebp-4]                               (1 / count, bullets spread over one step)
-    //   bullet  0x8083F1  movss xmm3,[esi+58h]                             (bullet speed per call)
+    // tw/kw tracers
     const string TracerGatePattern = "8B 01 57 FF 50 78 3B 86 90 00 00 00 0F 84";
     const string TracerSpawnPattern = "D9 5D 0C F3 0F 10 45 0C F3 0F 58 46 7C F3 0F 11 45 0C D9 45 0C";
     const string TracerBulletPattern = "3B 46 6C 0F 83 ?? ?? ?? ?? F3 0F 10 56 18 F3 0F 10 5E 58 F3 0F 10 46 20";
@@ -1079,7 +1022,7 @@ static class Program
                                  Spawn = s + 3, Step = s + 0x46, Spacing = s + 0x86, Bullet = b + 14 };
     }
 
-    // mem: k = 30/fps, last drawn frame, then the stubs (+10h gate, +40h spawn, +60h step, +70h spacing, +80h bullet)
+    // mem: k = 30/fps
     static void PatchTracers(IntPtr proc, TracerSites t, int fps, uint fpsVa, uint mem)
     {
         uint k = mem, last = mem + 4, gate = mem + 0x10, spawn = mem + 0x40, step = mem + 0x60, spacing = mem + 0x70, bullet = mem + 0x80;
@@ -1115,6 +1058,30 @@ static class Program
         Write(proc, t.Bullet, call(t.Bullet, bullet));
     }
 
+    // extra (shadowmap=4096 / 8192)
+    const string ShadowSetterPattern = "83 BA F0 02 00 00 04 B8 ?? ?? ?? ?? 7C 12 81 F9 00 08 00 00 7F 0A C7 05 ?? ?? ?? ?? 00 08 00 00";
+    const string ShadowUpdatePattern = "83 B8 F0 02 00 00 04 7C 13 B9 00 08 00 00 39 0D ?? ?? ?? ?? 7F 06 89 0D";
+    class ShadowSites { public uint Setter, Update; }
+
+    static ShadowSites FindShadowMap(byte[] img)
+    {
+        uint s = FindUnique(img, ShadowSetterPattern), u = FindUnique(img, ShadowUpdatePattern);
+        if (s == 0 || u == 0) return null;
+        // both write the same size global
+        uint g1 = BitConverter.ToUInt32(img, (int)(s - ImageBase) + 24), g2 = BitConverter.ToUInt32(img, (int)(u - ImageBase) + 16);
+        return g1 == g2 && g1 == BitConverter.ToUInt32(img, (int)(u - ImageBase) + 24) ? new ShadowSites { Setter = s, Update = u } : null;
+    }
+
+    static void PatchShadowMap(IntPtr proc, ShadowSites t, int size)
+    {
+        byte[] n = BitConverter.GetBytes((uint)size);
+        Write(proc, t.Setter + 6, new byte[] { 0 });    // shadow setting >= 0
+        Write(proc, t.Setter + 16, n);                   // cmp ecx,n
+        Write(proc, t.Setter + 28, n);                   // mov dword [size],n
+        Write(proc, t.Update + 6, new byte[] { 0 });
+        Write(proc, t.Update + 10, n);                   // mov ecx,n
+    }
+
     // stepVa holds 1/fps already. stubVa: 30hz frame stub (slot 78h), dataVa: 2 floats
     static void PatchCnc3Fx(IntPtr proc, Cnc3Fx fx, int fps, uint fpsVa, uint stepVa, uint stubVa, uint dataVa)
     {
@@ -1144,7 +1111,7 @@ static class Program
                 var p = new List<byte> { 0x57, 0xE8 }; p.AddRange(u(stubVa - (fx.TracerUpdate + 6)));
                 Write(proc, fx.TracerUpdate, p.ToArray());
             }
-            // mov eax,[ecx] / push ebx / call [eax+78h] -> push ebx / call stub, and inc edx (the max 1) -> nop
+            // mov eax,[ecx] / push ebx / call [eax+78h] -> push ebx / call stub
             if (pulse)
             {
                 var p = new List<byte> { 0x53, 0xE8 }; p.AddRange(u(stubVa - (fx.PulseUpdate + 6)));
@@ -1170,7 +1137,7 @@ static class Program
         var zooms = new[] { new { Beh = h.ZoomIn, Fn = h.ViewIn }, new { Beh = h.ZoomOut, Fn = h.ViewOut } };
         for (int i = 0; i < 2; i++)
         {
-            // z = m*z +/- c per frame. same result per second at fps frames: m' = m^(30/fps), c' = c*(1-m')/(1-m)
+            // z = m*z +/- c per frame
             byte[] code = img.Skip((int)(zooms[i].Fn - ImageBase)).Take(h.Len).ToArray();
             double m = FloatAt(img, BitConverter.ToUInt32(code, h.MOff)), c = FloatAt(img, BitConverter.ToUInt32(code, h.COff));
             double m2 = Math.Pow(m, k), c2 = c * (1 - m2) / (1 - m);
@@ -1180,15 +1147,14 @@ static class Program
             BitConverter.GetBytes(mVa).CopyTo(code, h.MOff);   // fmul [m']
             BitConverter.GetBytes(cVa).CopyTo(code, h.COff);   // fsub/fadd [c']
             Write(proc, stub, code);
-            // behavior: mov ecx,[view] / (mov eax,[ecx] / mov edx,[eax+slot] / call edx) -> call stub
-            // tw/kw: (mov eax,[ecx] / call [eax+slot]), 8 bytes
+            // behavior: mov ecx,[view]
             uint site = zooms[i].Beh + 13;
             var p = new List<byte> { 0xE8 }; p.AddRange(BitConverter.GetBytes(stub - (site + 5))); p.AddRange(Enumerable.Repeat((byte)0x90, h.Cnc3 ? 3 : 5));
             Write(proc, site, p.ToArray());
         }
         if (h.Cnc3)
         {
-            // movss xmm0,[gd+off] / mov eax,[esp+10h] / mulss xmm0,[ecx+4] (17 bytes) -> call stub that also scales by 30/fps
+            // movss xmm0,[gd+off] / mov eax,[esp+10h] / mulss xmm0,[ecx+4]
             uint site = h.Rotate + 12, rstub = stubVa + 0x80;
             Write(proc, dataVa + 0x10, BitConverter.GetBytes((float)k));
             var s = new List<byte>(img.Skip((int)(site - ImageBase)).Take(8));                     // movss xmm0,[eax+off]
@@ -1206,8 +1172,7 @@ static class Program
         Redirect(proc, new List<uint> { rotOperand }, dataVa + 0x10);
     }
 
-    // units only interpolate for 6 frames after a logic update (enough at 90fps). above that
-    // they froze then jumped = the hitching. make it fps/15 + 2
+    // units only interpolate for 6 frames after a logic update
     static readonly string[] InterpWindowPatterns = {
         "2B 86 30 01 00 00 83 F8 06",                                            // ra3
         "FF 50 78 2B 83 38 01 00 00 83 F8 06", "FF 50 78 2B 86 38 01 00 00 83 F8 06",   // tw
@@ -1227,7 +1192,7 @@ static class Program
                 if (j == pat.Length) list.Add(ImageBase + (uint)(i + pat.Length - 1));
             }
         }
-        // ra3 has 2, uprising 3 (an extra copy with a "force" argument), all the same check on the same field
+        // ra3 has 2, uprising 3
         return list.Count == 2 || list.Count == 3 ? list : new List<uint>();
     }
 
@@ -1275,11 +1240,7 @@ static class Program
         }
     }
 
-    // each 15hz tick is 6 phases. at 90+ fps the engine does one phase per frame so a tick = 6 frames,
-    // meaning 120fps ran 20 ticks/s and slow pcs went slow-mo. so: schedule ticks off the clock instead
-    // (every 66.67ms, in 1/3ms units so it's exact), run whatever phases are due each frame, and set
-    // interp from the time so movement stays smooth
-    // PreGlobal/PreOff/PreFn: bfme2 calls PreFn([[PreGlobal]+PreOff] * 10 + phase - 1) before each dispatch
+    // each 15hz tick is 6 phases
     class SchedSite { public uint Advance, Exit, TimeFn; public byte Phase, Interp; public uint Dispatch; public uint PreGlobal, PreFn; public byte PreOff; public int Tick = 200; public uint FfGlobal, FfOff; }   // Tick: logic tick in 1/3 ms (200 = 15 hz, 600 = 5 hz)
 
     const string SchedPatternA = "8B 0D ?? ?? ?? ?? BB 01 00 00 00 88 99 C4 00 00 00 8B 4E 58 83 F9 06 75 1A 80 7E 64 00 74 14 A1 ?? ?? ?? ?? 33 D2 F7 35";
@@ -1328,9 +1289,7 @@ static class Program
         return null;
     }
 
-    // replay fast forward: the main loop clears the "use the frame limiter" byte when the global data's fast mode byte
-    // is set: mov ecx,[globaldata] / cmp byte [ecx+off],0 / je +7 / mov byte [limiter],0. the limiter byte has to be
-    // the one the limiter itself tests (cmp byte [limiter],0). c&c3: mov eax,[globaldata] / cmp byte [eax+off32],0 / je / mov byte [limiter],0
+    // replay fast forward
     static void FindFastForward(byte[] img, SchedSite s)
     {
         var hits = new List<Tuple<uint, uint>>();
@@ -1352,16 +1311,10 @@ static class Program
         Func<uint, byte[]> u = BitConverter.GetBytes;
         uint eng = mem + 0x3C, r = mem + 0x38, now3 = mem + 0x80, t0 = mem + 0x84, pend = mem + 0x88, k200 = mem + 0x8C;
         uint stubA = mem + 0x800, stubB = mem + 0xA00, table = mem + 0xB0, tickFrame = mem + 0xC8, prevNow = mem + 0xCC, prevA = mem + 0xD0;
-        // phase k is due once (time into the tick + this frame) reaches k/6, the moment stock has interp = k/6.
-        // interp then rises smoothly from k/6 toward (k+1)/6 until the next phase. at 90 that's stock exactly.
-        // (it used to run phase k at (k-1)/6, so interp sat ~1/6 behind the phase that just ran: turrets wobbled, #11)
-        // 1/3 ms per logic tick. stock's limiter waits whole ms (33 per frame at 30 fps), so stock really runs 66 ms ticks
-        // (15.15/s, measured). online every pc has to tick at the same rate or the faster one keeps stalling on the slower
-        // one (lag), so match stock exactly: 198 instead of 200
+        // phase k is due once
         int T = site.Tick * 99 / 100;
         for (int k = 1; k <= 6; k++) Write(proc, table + (uint)((k - 1) * 4), BitConverter.GetBytes(k * T / 6 - 3));   // 30 63 97 130 163 197 at 15 hz
-        // batches: phases 1-3 run together when the tick starts (wrap), 4-6 together at half a tick. the scan only has to see
-        // phase 4 come due; 5 and 6 never (the dispatcher runs them with 4). interp: 0..1/2 after 1-3, 1/2..1 after 4-6
+        // batches: phases 1-3 run together when the tick starts
         uint itable = table;
         if (batches)
         {
@@ -1372,8 +1325,7 @@ static class Program
         uint exitGlobal = BitConverter.ToUInt32(img, (int)(site.Exit + 2 - ImageBase));
         byte ph = site.Phase;
         Write(proc, k200, BitConverter.GetBytes((float)T));
-        // stock sets interp to exactly phase/6 (float n * (1/6f), max 1) before every phase it runs. the phases stub A runs
-        // itself have to see the same value, not stub B's time based one, or logic run in them can differ between pcs (desync)
+        // stock sets interp to exactly phase/6
         uint phaseInterp = mem + 0x1020;
         for (int k = 1; k <= 6; k++) Write(proc, phaseInterp + (uint)((k - 1) * 4), BitConverter.GetBytes(Math.Min(1f, (float)(k * (double)(1f / 6f)))));
 
@@ -1382,8 +1334,7 @@ static class Program
         a.E(0x89, 0x35); a.D(eng);                                   // mov [engine],esi
         if (newTickFlag != 0) { a.E(0xC6, 0x05); a.D(newTickFlag); a.E(0x00); }   // mov byte [newtick],0: a new engine update
         a.E(0x50, 0x52, 0x51);                                       // push eax / push edx / push ecx
-        // replay fast forward (#26): the game turns its frame limiter off and stock logic speeds up with the frame rate.
-        // the clock would hold it at normal speed (only animations sped up), so step aside and let stock count frames
+        // replay fast forward
         if (site.FfGlobal != 0) { a.E(0xA1); a.D(site.FfGlobal); a.E(0x85, 0xC0); a.J(0x74, "noff"); a.E(0x80, 0xB8); a.D(site.FfOff); a.E(0x00); a.J(0x75, "pass"); a.L("noff"); }
         a.E(0xA1); a.D(fpsVa); a.E(0x33, 0xD2, 0xB9, 0x0F, 0, 0, 0, 0xF7, 0xF1); a.E(0xA3); a.D(r);   // r = fps / 15
         a.Rel(0xE8, site.TimeFn);                                   // eax = ms (timeGetTime)
@@ -1406,7 +1357,7 @@ static class Program
         a.L("lok");
         a.E(0x03, 0xD0, 0x58);                                       // edx = t + frame length / pop eax
         a.E(0x83, 0xF9, 0x06); a.J(0x72, "mid");
-        // phase 6 done. phase 1 of the next tick is due at 200 + 33 (thresholds are 1ms early, now3 rounds down)
+        // phase 6 done
         a.E(0x81, 0xFA); a.D((uint)(batches ? T - 3 : T + T / 6 - 3)); a.J(0x7C, "idle");
         a.E(0x81, 0x05); a.D(t0); a.D((uint)T);                      // tickStart += one tick
         a.E(0xA3); a.D(tickFrame);
@@ -1439,9 +1390,7 @@ static class Program
         a.E(0x59, 0x5A, 0x58, 0x8B, 0x4E, ph, 0x83, 0xF9, 0x06, 0xC3);
         Write(proc, stubA, a.Done(0x200));
 
-        // real clock for effects (skip=realclock): effect stubs turn drawn frames into a 30 hz clock with frames * 30 / fps,
-        // which runs slow whenever the pc draws fewer frames than the setting (big fights). this gives them
-        // (ms since start) * fps / 1000 instead, same scale but real time. drawing only, logic never sees it
+        // real clock for effects
         realClockFn = 0;
         if (realclockOpt && On("realclock") && site.TimeFn != 0)
         {
@@ -1458,14 +1407,12 @@ static class Program
             realClockFn = fn;
         }
 
-        // stub B: replaces mov ecx,[global] at the exit.
-        // interp = (now - tickStart + frame length) / 200, max 1
+        // stub B: replaces mov ecx,[global] at the exit
         var b = new Asm(stubB);
         b.E(0x50, 0x52, 0x51);
         if (newTickFlag != 0)
         {
-            // a tick started this frame (stub A passed it on) and its first batch ran: phase 6 / 2 = 3. held back by the network -> 7
-            // (fast forward: stock runs it, any frame that just ran phases 1-3)
+            // a tick started this frame
             b.E(0x83, 0x3D); b.D(pend); b.E(0x01); b.J(0x74, "chk");
             if (site.FfGlobal != 0) { b.E(0xA1); b.D(site.FfGlobal); b.E(0x85, 0xC0); b.J(0x74, "nonew"); b.E(0x80, 0xB8); b.D(site.FfOff); b.E(0x00); b.J(0x74, "nonew"); } else b.J(0xEB, "nonew");
             b.L("chk");
@@ -1475,12 +1422,7 @@ static class Program
         }
         if (frameClock != 0 && fps > 0)
         {
-            // #30: now3 is read when the frame starts, which wobbles by a few ms around the frame limiter's 1000/fps,
-            // and the measured last frame length on top doubled it: interp stepped 0.08..0.20 a frame instead of an
-            // even 0.125 at 120 (logged), so every blended unit sped up and slowed down (ore collector turning on its
-            // platform). now: wall time into the tick once, on the frame the tick starts (t0 moved), then the effect
-            // clock from there (ms + the clock fix's carried remainder in 1/fps ms, so exactly one frame per frame), plus
-            // one frame. logic timing (stub A) is unchanged. own stub (stub B has no room): eax = interp in 1/3 ms
+            // #30: now3 is read when the frame starts
             uint lastT0 = mem + 0x1770, ibase = mem + 0x1774, w0 = mem + 0x1778, r0 = mem + 0x177C, rem = mem + 0x1600;   // rem: PatchClock
             uint fi = mem + 0x1780;
             var f = new Asm(fi);
@@ -1524,7 +1466,7 @@ static class Program
         b.E(0x50, 0xDB, 0x04, 0x24, 0xD8, 0x35); b.D(k200); b.E(0xD9, 0x5E, site.Interp, 0x58);   // [interp] = eax / 200
         b.E(0x59, 0x5A, 0x58, 0x8B, 0x0D); b.D(exitGlobal); b.E(0xC3);        Write(proc, stubB, b.Done(0x100));
 
-        // skip=schedinterp: keep the game's own interp (phase / 6). for tracking down turret wobble (#11)
+        // skip=schedinterp
         var hooks = new List<Tuple<uint, uint>> { Tuple.Create(site.Advance, stubA) };
         if (On("schedinterp")) hooks.Add(Tuple.Create(site.Exit, stubB));
         foreach (var s in hooks)
@@ -1538,10 +1480,7 @@ static class Program
         }
     }
 
-    // soviet/empire construction (StructureUnpackUpdate). the module's field offsets differ in uprising (wildcards).
-    // start + duration are in 30fps frames but
-    // "now" is getFrame() = drawn frames, so at 120 it's 4x ahead and builds pop in instantly.
-    // use the logic tick through the same conversion instead
+    // soviet/empire construction
     const string UnpackPattern =
         "8B 35 ?? ?? ?? ?? 8B 57 ?? D9 86 BC 01 00 00 55 D9 5C 24 14 52 8B CE E8 ?? ?? ?? ?? D8 0D ?? ?? ?? ?? " +
         "D9 7C 24 12 8B CE 0F B7 44 24 12 D8 0D ?? ?? ?? ?? 0D 00 0C 00 00 89 44 24 18 8B 47 ?? D8 4C 24 14 50 " +
@@ -1626,9 +1565,7 @@ static class Program
         }
     }
 
-    // uprising: a rope/trail renderer (1.1 0x8B7060) locks a vertex buffer and writes into it without checking.
-    // at high fps the lock can come back null -> crash writing 0 (#18, desolator killing infantry).
-    // if the lock fails, draw nothing this frame and leave the way the "no points" path does
+    // uprising: a rope/trail renderer
     const string TrailLockPattern = "8B 8E A0 00 00 00 8B 01 8B 50 0C 6A 00 53 FF D2 33 ED 85 FF 8B D8 89 6C 24 54 0F 8E";
 
     static uint FindTrailLock(byte[] img)
@@ -1636,7 +1573,7 @@ static class Program
         uint m = FindUnique(img, TrailLockPattern);
         if (m == 0) return 0;
         int o = (int)(m - ImageBase);
-        // sub esp,1E4h / push ebx / push esi / mov esi,ecx at the start, and the draw count store at [esi+94h]
+        // sub esp,1E4h / push ebx / push esi / mov esi,ecx at the start
         bool prologue = img[o - 0xA6] == 0x81 && img[o - 0xA5] == 0xEC && BitConverter.ToUInt32(img, o - 0xA4) == 0x1E4
                         && img[o - 0xA0] == 0x53 && img[o - 0x9F] == 0x56 && img[o - 0x9E] == 0x8B && img[o - 0x9D] == 0xF1;
         bool count = img[o - 0x30] == 0x89 && img[o - 0x2F] == 0x96 && BitConverter.ToUInt32(img, o - 0x2E) == 0x94;
@@ -1657,24 +1594,18 @@ static class Program
         Write(proc, site, p.ToArray());
     }
 
-    // tw/kw (#25): floating text ("+$" over tiberium spikes, selling, harvesters...). add sets expire = getFrame() +
-    // framesPerMs (0.03, kept at 30 fps on purpose) * timeout ms, the update ages it once per new drawn frame and
-    // after expiry fades it by (frame - expire) * rate / frames per tick (2), the draw raises it by age * speed / 2.
-    // all of it counts drawn frames, so at 120 it lived a quarter as long and rose and faded 4x fast. both getFrame
-    // calls now get a 30 hz frame: the whole thing runs on stock's clock
-    // ra3/uprising have the same code (expire = getFrame + 0.03 x timeout, age +1 and fade per new frame), only the
-    // getFrame calls go mov eax,[ecx] / mov edx,[eax+74h] / call edx: those 7 bytes become call stub / nop / nop
+    // tw/kw (#25): floating text
     class FloatTextSites { public uint Add, Update; public bool Ra3; }
     static FloatTextSites FindFloatingText(byte[] img)
     {
-        // update: mov esi,ecx / mov ecx,[client] / mov eax,[ecx] / push edi / call [eax+78h] / mov edi,eax / cmp [esi+0Ch],edi / je / mov [esi+0Ch],edi
+        // update: mov esi,ecx / mov ecx,[client] / mov eax,[ecx] / push edi / call [eax+78h] / mov
         uint u = FindUnique(img, "8B F1 8B 0D ?? ?? ?? ?? 8B 01 57 FF 50 78 8B F8 39 7E 0C 0F 84 ?? ?? ?? ?? 89 7E 0C");
-        // add: mov ecx,[client] / mov eax,[ecx] / fstp [ebp+8] / call [eax+78h] / test / mov [ebp+10h],eax / fild [ebp+10h]
+        // add: mov ecx,[client] / mov eax,[ecx] / fstp [ebp+8] / call [eax+78h] / test / mov
         uint a = FindUnique(img, "8B 0D ?? ?? ?? ?? 8B 01 D9 5D 08 FF 50 78 85 C0 89 45 10 DB 45 10");
         if (u != 0 && a != 0) return new FloatTextSites { Update = u + 8, Add = a + 6 };
-        // ra3: mov esi,ecx / mov ecx,[client] / mov eax,[ecx] / mov edx,[eax+74h] / call edx / mov ebx,eax / cmp [esi+1Ch],ebx / je / mov [esi+1Ch],ebx
+        // ra3: mov esi,ecx / mov ecx,[client] / mov eax,[ecx] / mov edx,[eax+74h] / call edx / mov
         u = FindUnique(img, "8B F1 8B 0D ?? ?? ?? ?? 8B 01 8B 50 74 FF D2 8B D8 39 5E ?? 0F 84 ?? ?? ?? ?? 89 5E");
-        // add: mov ecx,[client] / mov edx,[ecx] / mov eax,[edx+74h] / call eax / test / mov [esp+x],eax / fild / jge / fadd / fld [framesPerMs] / fmul [timeout]
+        // add: mov ecx,[client] / mov edx,[ecx] / mov eax,[edx+74h] / call eax / test / mov
         a = FindUnique(img, "8B 0D ?? ?? ?? ?? 8B 11 8B 42 74 FF D0 85 C0 89 44 24 ?? DB 44 24 ?? 7D 06 D8 05 ?? ?? ?? ?? D9 05 ?? ?? ?? ?? D8 4C 24");
         if (u != 0 && a != 0) return new FloatTextSites { Update = u + 8, Add = a + 6, Ra3 = true };
         return null;
@@ -1699,11 +1630,7 @@ static class Program
         Write(proc, f.Add, new byte[] { 0xD9, 0x5D, 0x08, 0xE8 }.Concat(BitConverter.GetBytes(stubVa - (f.Add + 8))).ToArray());
     }
 
-    // tw/kw (#24): the audio manager's per-frame update admits queued requests, counts Limit slots and clears finished
-    // sounds. run every drawn frame, Limit=1 one-shots like the money gain/spend tick get through 4x as often at 120
-    // (cnc3_fps_patch found this, same signature: a stable tail 12Ah into the function, its only pointer is vtable
-    // slot 5). the slot gets a stub that calls the real update 30 times a second (carried remainder, no drift).
-    // its millisecond delta reads the frame counter difference, so the skipped frames are counted when it runs
+    // tw/kw (#24): the audio manager's per-frame update admits queued requests
     const string AudioUpdateTailPattern = "8B 8E 6C 02 00 00 E8 ?? ?? ?? ?? 8B 4E 30 3B CB 74 ?? F3 0F 2C 46 34 50 E8 ?? ?? ?? ?? 8B CE E8 ?? ?? ?? ?? " +
         "8B CE E8 ?? ?? ?? ?? 8D 45 F8 50 8B CE E8 ?? ?? ?? ?? 8D 45 F8 50 8B CE E8 ?? ?? ?? ?? 8B CE E8 ?? ?? ?? ??";
 
@@ -1738,10 +1665,7 @@ static class Program
         Write(proc, slot, BitConverter.GetBytes(stubVa));
     }
 
-    // tw/kw: StreamDraw::Stream (flamethrower etc, #21). its update runs every drawn frame and adds a new point
-    // each time (points move by real time, frames / fps). the vertex buffer holds what a 30hz stream makes, so at
-    // 240 the mesh writer runs off the end of it and crashes. only the add is held to 30hz: the update still runs
-    // every frame, so the stream moves as smoothly as before with the same number of points as stock
+    // tw/kw: StreamDraw::Stream
     const string StreamUpdatePattern = "8B F1 E8 ?? ?? ?? ?? 8B 46 50 89 46 4C 8B 0D ?? ?? ?? ?? 8B 01 FF 50 78 89 46 50 2B 46 4C";
 
     static uint FindStreamUpdate(byte[] img)
@@ -1757,7 +1681,7 @@ static class Program
 
     static void PatchStreamUpdate(IntPtr proc, byte[] img, uint site, uint fpsVa, uint stubVa)
     {
-        // add a point only when the 30hz frame moved since the last update: [esi+4Ch] last frame, [esi+50h] now
+        // add a point only when the 30hz frame moved since the last update
         var s = new Asm(stubVa);
         s.E(0x51);                                                    // push ecx
         s.E(0x8B, 0x46, 0x50, 0x6B, 0xC0, 0x1E, 0x33, 0xD2, 0xF7, 0x35); s.D(fpsVa);   // eax = now * 30 / fps
@@ -1770,18 +1694,14 @@ static class Program
         Write(proc, site + 1, BitConverter.GetBytes(stubVa - (site + 5)));
     }
 
-    // seconds turned into frames with the render fps setting (still 30, only the pacing reads get the real fps) and
-    // then counted with getFrame, which counts drawn frames: unit flash every fps/2 frames, radar event and marker
-    // lifetimes, a 10 s duplicate window, a 30 s repeat. those reads get the real fps so N seconds is N seconds again.
-    // only reads tied to getFrame: right after a getFrame call, or a global made from the fps whose one reader sits
-    // right after one. fades etc. that count with a 30hz clock keep 30 on purpose
+    // seconds turned into frames with the render fps setting
     static List<uint> FindFpsFrameReads(byte[] img, uint render, List<uint> pacing)
     {
         var list = new List<uint>();
         if (render == 0) return list;
         int end = TextEnd(img);
         Func<int, uint> dw = o => BitConverter.ToUInt32(img, o);
-        // getFrame: mov ecx,[client] / mov r,[ecx] / call [r+78h] (c&c3), or mov r,[r+74h] / call r (ra3)
+        // getFrame: mov ecx,[client] / mov r,[ecx] / call [r+78h]
         var count = new Dictionary<uint, int>();
         for (int i = 0x1000; i < end - 16; i++)
         {
@@ -1803,14 +1723,13 @@ static class Program
         for (int o = 0x1002; o < end - 4; o++)
             if (img[o] == R[0] && img[o + 1] == R[1] && img[o + 2] == R[2] && img[o + 3] == R[3] && isRead(o)) reads.Add(o);
         var pick = new HashSet<int>();
-        // the read and its sign-test partner a few bytes away (fild [fps] / mov eax,[fps] / test / jge / fadd 2^32)
+        // the read and its sign-test partner a few bytes away
         Action<int> take = o => { foreach (int r in reads) if (Math.Abs(r - o) <= 12) pick.Add(r); };
         foreach (int o in reads) if (afterFrame(o - (img[o - 1] == 0xA1 ? 1 : img[o - 3] == 0x0F ? 3 : 2))) take(o);
-        // mov r,[fps] right before the getFrame call, both used together after it (frame % (2 * fps) pulses)
+        // mov r,[fps] right before the getFrame call
         foreach (int o in reads)
             if (img[o - 2] == 0x8B && (spans.Any(sp => sp[0] < o && o < sp[1]) || Enumerable.Range(o + 4, 5).Any(callStarts.Contains))) take(o);
-        // frame budget timers: the constructor stores round(fps * seconds), the update (vtable slot 1) subtracts
-        // drawn frames from it. mov [esi],vtable / mov [esi+4],r / mov [esi+8],eax / fild [fps]
+        // frame budget timers
         byte[] Rb = BitConverter.GetBytes(render);
         foreach (uint m in FindAll(img, "C7 06 ?? ?? ?? ?? 89 ?? 04 89 46 08 DB 05 " + string.Join(" ", Rb.Select(x => x.ToString("X2")))))
         {
@@ -1824,7 +1743,7 @@ static class Program
             for (int k = uo; k < uo + 0x30 && !frames; k++) frames = callEnds.Contains(k);
             if (frames) take(mo + 14);
         }
-        // globals built from the fps: writer mov [g],eax (A3) / mov [g],r32 (89 05..3D) with fps reads shortly before
+        // globals built from the fps
         var writers = new Dictionary<uint, List<int>>();
         for (int i = 0x1000; i < end - 8; i++)
         {
@@ -1836,7 +1755,7 @@ static class Program
         }
         foreach (var kv in writers)
         {
-            // fps reads feeding this writer: up to 0xB0 back, not across a ret that starts another function
+            // fps reads feeding this writer
             var feed = new List<int>();
             foreach (int wo in kv.Value)
                 foreach (int r in reads)
@@ -1847,7 +1766,7 @@ static class Program
                         if (!cut) feed.Add(r);
                     }
             if (feed.Count == 0) continue;
-            // every other memory use of g: exactly one, div [g] / cmp r32,[g], right after a getFrame call
+            // every other memory use of g
             byte[] G = BitConverter.GetBytes(kv.Key);
             var uses = new List<int>();
             for (int o = 0x1002; o < end - 4; o++)
@@ -1869,8 +1788,7 @@ static class Program
     // opcodes that take a modrm byte (so 3D in cmp eax,imm32 isn't mistaken for one)
     static readonly HashSet<byte> ModRmOps = new HashSet<byte> { 0x01, 0x03, 0x0B, 0x23, 0x29, 0x2B, 0x33, 0x39, 0x3B, 0x81, 0x83, 0x89, 0x8B, 0x8D, 0xC7, 0xD8, 0xD9, 0xDB, 0xDC, 0xDD, 0xF7, 0xFF };
 
-    // end of a getFrame call starting at i (after mov ecx,[client]): mov r,[ecx] then call [r+78h], or
-    // mov r,[r+74h] / call r. 0 if it isn't one
+    // end of a getFrame call starting at i
     static int Slot(byte[] img, int i)
     {
         if (img[i] == 0x8B && img[i + 1] >= 0xC0 && (img[i + 2] != 0x8B || (img[i + 3] & 0xC7) == 0x01)) i += 2;   // mov r,r in between
@@ -1888,13 +1806,10 @@ static class Program
         return 0;
     }
 
-    // blinks keyed off the low bits of getFrame (drawn frames): tw/kw radar blips (frame & 4, ~4 hz) and a marker
-    // drawn on odd frames (frame & 1) in all of them. at 240 they turn into a flicker / look solid, so those
-    // calls get a 30hz frame
+    // blinks keyed off the low bits of getFrame
     class Blinks { public byte Slot; public int Len; public uint TimerInit, TimerUpdate, TintInstall9; public List<uint> Sites = new List<uint>(), Tint = new List<uint>(), TintLen = new List<uint>(); }
 
-    // the tint callers that size the envelope with the fps float (real fps): those reads get 30.0 so every length is in
-    // 30 fps frames like the 30hz clock (#28). window = how far before the call to look
+    // the tint callers that size the envelope with the fps float
     static void FindTintLengths(byte[] img, Blinks b, uint tset, int window)
     {
         uint render = FindRenderFps(img), fpsFloat = 0;
@@ -1920,19 +1835,14 @@ static class Program
         // c&c3: mov ecx,[client] / mov eax,[ecx] / call [eax+78h] / test al,4 or 1
         foreach (string t in new[] { "A8 04", "A8 01" })
             foreach (uint m in FindAll(img, "8B 0D ?? ?? ?? ?? 8B 01 FF 50 78 " + t)) b.Sites.Add(m + 6);
-        // tw/kw tint envelope (color flash): set stores frame + attack/peak/decay frames (30 fps frames), install and
-        // play compare getFrame with them. all three get the 30hz frame or none
+        // tw/kw tint envelope
         uint tset = FindUnique(img, "55 8B EC 56 8B F1 8B 0D ?? ?? ?? ?? 8B 01 FF 50 78 8B 4D 08 8B 55 0C 03 C8");
         uint tins = FindUnique(img, "8B 0D ?? ?? ?? ?? 8B 01 FF 50 78 39 46 3C 76");
         uint tply = FindUnique(img, "8B 0D ?? ?? ?? ?? 8B 01 FF 50 78 83 65 F0 00 8B D8");
         if (tset != 0 && tins != 0 && tply != 0) b.Tint.AddRange(new[] { tset + 12, tins + 6, tply + 6 });
-        // some callers set those lengths as seconds * the client fps float (fps as a float, built at startup from the fps
-        // we redirect, so it holds the real fps): those come out in drawn frames, 4x too long for the 30 hz clock (#28, nod
-        // hub lines fading in slowly). others pass 30 fps frames (turrets) and need that clock. so the fps float reads
-        // shortly before a call to set (fld / fmul [float]) get a 30.0 instead: every length is in 30 fps frames
+        // some callers set those lengths as seconds * the client fps float
         if (b.Tint.Count > 0) FindTintLengths(img, b, tset, 0x90);
-        // tw/kw model timer: init stamps [esi+off] = getFrame, update adds getFrame - stamp to a progress capped at a
-        // duration in 30 fps frames. both get the 30hz frame (the init's add esp,10h sits inside the call)
+        // tw/kw model timer
         uint tup = FindUnique(img, "8B 0D ?? ?? ?? ?? 8B 01 FF 50 78 8B D0 8D 8B ?? ?? 00 00 2B 11");
         if (tup != 0)
         {
@@ -1945,9 +1855,7 @@ static class Program
         // ra3: mov ecx,[client] / mov edx,[ecx] / mov eax,[edx+74h] / call eax / test al,1
         foreach (uint m in FindAll(img, "8B 0D ?? ?? ?? ?? 8B 11 8B 42 74 FF D0 A8 01")) b.Sites.Add(m + 6);
         b.Slot = 0x74; b.Len = 7;
-        // ra3/uprising tint envelope, same design as tw/kw (set: frame + attack/hold/decay in 30 fps frames, install and
-        // play compare getFrame with them), not fixed before 1.9.6. set and play: mov eax,[ecx] / mov edx,[eax+74h] /
-        // call edx (7 bytes, like the blinks). install has push esi / push edi in the middle of its call (9 bytes)
+        // ra3/uprising tint envelope
         uint rset = FindUnique(img, "56 8B F1 8B 0D ?? ?? ?? ?? 8B 01 8B 50 74 FF D2 8B 4C 24 08 8B 54 24 0C");
         uint rply = FindUnique(img, "8B 0D ?? ?? ?? ?? 8B 01 8B 50 74 FF D2 39 46 3C");
         uint rins = FindUnique(img, "8B 0D ?? ?? ?? ?? 89 44 24 ?? 8B 11 8B 42 74 56 57 FF D0 8B D8");
@@ -1986,7 +1894,7 @@ static class Program
                 while (p.Count < b.Len) p.Add(0x90);
                 Write(proc, site, p.ToArray());
             }
-            // ra3 install: mov edx,[ecx] / mov eax,[edx+74h] / push esi / push edi / call eax -> push esi / push edi / call stub / nop / nop
+            // ra3 install: mov edx,[ecx] / mov eax,[edx+74h] / push esi / push edi / call eax -> push
             if (b.TintInstall9 != 0)
                 Write(proc, b.TintInstall9, new byte[] { 0x56, 0x57, 0xE8 }.Concat(BitConverter.GetBytes(stubVa - (b.TintInstall9 + 7))).Concat(new byte[] { 0x90, 0x90 }).ToArray());
             // callers that size the envelope with the fps float read 30.0 (#28)
@@ -1998,10 +1906,7 @@ static class Program
         }
     }
 
-    // ra3/uprising: a drawable pulse (sine on getFrame % period, two counters -1 per call) that the drawable update
-    // runs once per drawn frame. that call now only goes through on drawn frames that start a new 30hz frame
-    // (same answer for every drawable in a frame, no state needed), and the sine reads the 30hz frame.
-    // between those frames the pulse keeps its last value, as at 30 fps
+    // ra3/uprising
     class PulseSite { public uint Fn, Sine, Call, Client; }
 
     static PulseSite FindPulse(byte[] img)
@@ -2046,11 +1951,7 @@ static class Program
         Write(proc, p.Sine, new byte[] { 0xE8 }.Concat(BitConverter.GetBytes(frameStub - (p.Sine + 5))).Concat(new byte[] { 0x90, 0x90 }).ToArray());
     }
 
-    // effect timers with lengths from the game data (a random min..max in 30 fps frames, made with frames per ms 0.03)
-    // that are checked against getFrame - start, in drawn frames: a delay before something attached appears, a delayed
-    // step, ribbon/trail segment ages. all ended a quarter of the way through at 120. the elapsed count goes through a
-    // stub that turns it into 30 fps frames: [original sub] / elapsed * 30 / fps / [original cmp or mov+test] / ret.
-    // pattern, offset of the sub, bytes replaced (sub + the rest), ra3 and tw/kw forms
+    // effect timers with lengths from the game data
     static readonly string[][] ElapsedSites = {
         new[] { "8B 7E 04 FF D2 2B 47 2C 3B 46 10 72", "5", "6" },          // ra3: delay before the attached thing starts
         new[] { "8B 7E 04 FF 50 78 2B 47 2C 3B 46 10 72", "6", "6" },       // tw/kw
@@ -2076,7 +1977,7 @@ static class Program
             foreach (var s in ElapsedSites) { uint m = FindUnique(img, s[0]); if (m + uint.Parse(s[1]) == site) total = int.Parse(s[2]); }
             var a = new Asm(stubVa);
             for (int i = 0; i < subLen; i++) a.E(img[o + i]);
-            a.E(0x52, 0x6B, 0xC0, 0x1E, 0x33, 0xD2, 0xF7, 0x35); a.D(fpsVa); a.E(0x5A);   // push edx / imul eax,eax,30 / xor edx,edx / div [fps] / pop edx
+            a.E(0x52, 0x6B, 0xC0, 0x1E, 0x33, 0xD2, 0xF7, 0x35); a.D(fpsVa); a.E(0x5A);   // push edx / imul eax,eax,30 / xor edx,edx / div [fps] / pop
             for (int i = subLen; i < total; i++) a.E(img[o + i]);
             a.E(0xC3);
             Write(proc, stubVa, a.Done(0x20));
@@ -2087,13 +1988,7 @@ static class Program
         }
     }
 
-    // gpu particle removal (instant generator glow #29, soviet reactor): once per drawn frame the manager takes the w3d
-    // time x fps x 0.001 (particle frames, fps still 30) and drops every particle whose end time (birth + lifetime) has
-    // passed. the glows respawn a 1-frame particle every 2 frames; at 30 fps the old one is only seen at ages 0 and 0.99,
-    // above that the frames in between dropped it (and the shader hid it, see PfxShader). the removal now reads the
-    // time minus the same slack as the shader edit.
-    // ra3: push ecx / push esi / mov esi,ecx / call time / imul eax,[fps] / ... (call -> call stub, time fn is mov eax,[g] / ret)
-    // tw/kw: mov eax,[time] / imul eax,[fps] / test / mov [ebp-4],eax / push esi / mov esi,ecx
+    // gpu particle removal
     class PfxCull { public uint Site, Time; }
 
     static PfxCull FindPfxCull(byte[] img, uint render)
@@ -2110,12 +2005,7 @@ static class Program
         return new PfxCull { Site = m, Time = BitConverter.ToUInt32(img, (int)(m - ImageBase) + 1) };
     }
 
-    // ra3/uprising drawable glow (soviet reactor flash): every drawable has two colour glow blocks (+184h ambient,
-    // +188h status) and the drawable update steps both once per drawn frame: ramp up by a fixed step (ra3) or +1 on a
-    // counter (uprising), hold for n frames, ramp down, then off until the next trigger. lengths are 30 fps frames, so
-    // above ~60 fps the cycle ended early and sat dark until the next one: a rhythmic flash. the step function only
-    // runs on drawn frames that start a new 30hz frame (entry gate, so both callers are covered; the second one is a
-    // tail jump). found through the pulse call, the glow call sits right before it: mov ecx,[esi+184h] / test / je / call
+    // ra3/uprising drawable glow
     class GlowSite { public uint Fn, Client; public int Copy; }
 
     static GlowSite FindGlow(byte[] img, PulseSite p)
@@ -2125,7 +2015,7 @@ static class Program
         if (!(img[c - 4] == 0x85 && img[c - 3] == 0xC9 && img[c - 2] == 0x74 && img[c - 1] == 0x05 && img[c] == 0xE8)) return null;
         uint fn = CallTarget(img, p.Call - 7);
         int f = (int)(fn - ImageBase);
-        // ra3: movsx eax,byte [ecx+x] / cmp eax,3 (7 bytes). uprising: mov eax,[ecx+4] / sub esp,10h (6 bytes)
+        // ra3: movsx eax,byte [ecx+x] / cmp eax,3
         if (img[f] == 0x0F && img[f + 1] == 0xBE && img[f + 2] == 0x41 && img[f + 4] == 0x83 && img[f + 5] == 0xF8 && img[f + 6] == 0x03)
             return new GlowSite { Fn = fn, Client = p.Client, Copy = 7 };
         if (img[f] == 0x8B && img[f + 1] == 0x41 && img[f + 3] == 0x83 && img[f + 4] == 0xEC && img[f + 6] == 0x83 && img[f + 8] == 0x03)
@@ -2136,7 +2026,7 @@ static class Program
     static void PatchGlow(IntPtr proc, byte[] img, GlowSite s, uint fpsVa, uint stubVa)
     {
         int f = (int)(s.Fn - ImageBase);
-        // gate: return unless f(now) != f(now - 1), else the moved first instructions and back into the function
+        // gate: return unless f(now) != f(now - 1)
         var g = new Asm(stubVa);
         g.E(0x51, 0x8B, 0x0D); g.D(s.Client);
         g.E(0x8B, 0x01, 0xFF, 0x50, 0x74, 0x8B, 0xC8);
@@ -2154,9 +2044,7 @@ static class Program
         Write(proc, s.Fn, p.ToArray());
     }
 
-    // tw/kw drawable fade/blend (0x4809DB in tw 1.10): runs once per drawn frame (it also steps a phase by the real
-    // 1/fps), counts [+1F8h] down by 1 per call against a length of fps x [+1E4h] seconds, both read from the render
-    // fps (still 30): over in a quarter of the time at 120. its fps reads get the real fps, length in drawn frames
+    // tw/kw drawable fade/blend
     static List<uint> FindDrawableFadeFps(byte[] img, uint render)
     {
         var l = new List<uint>();
@@ -2168,19 +2056,13 @@ static class Program
         return l;
     }
 
-    // radar / group marker fade (all four games): six markers, each held for fps x seconds of getFrame, then every call
-    // takes (elapsed frames x k) off its alpha. the function runs once per drawn frame and has no "already did this
-    // frame" check, so at 120 the hold was right (fpsframes) but the fade ran 4 calls a frame and with 4x the elapsed
-    // count: gone in a blink. now it only runs on drawn frames that start a new 30hz frame, on the 30hz frame, with
-    // the stock 30 fps hold (its fps reads are left out of fpsframes)
-    // the skip path returns like the function does: tw/kw take the fade step as a float on the stack (ret 4), ra3 none.
-    // a plain ret on tw/kw left the float behind, the caller popped it as esi and returned into the heap (crash)
+    // radar / group marker fade
     class RadarFade { public uint Fn, Call, Site, Client; public byte Slot; public bool PushEdi; public ushort ArgBytes; }
 
     static RadarFade FindRadarFade(byte[] img)
     {
         var r = new RadarFade();
-        // tw/kw: push ebp / mov ebp,esp / sub esp,0Ch / push ebx,esi,edi / mov edi,ecx / mov ecx,[client] / mov eax,[ecx] / call [eax+78h] / fild [fps] / mov ebx,eax / mov eax,[fps]
+        // tw/kw: push ebp / mov ebp,esp / sub esp,0Ch / push ebx,esi,edi / mov edi,ecx / mov
         uint m = FindUnique(img, "55 8B EC 83 EC 0C 53 56 57 8B F9 8B 0D ?? ?? ?? ?? 8B 01 FF 50 78 DB 05 ?? ?? ?? ?? 8B D8 A1");
         if (m != 0)
         {
@@ -2191,7 +2073,7 @@ static class Program
         }
         else
         {
-            // ra3: sub esp,0Ch / push ebp,esi / mov esi,ecx / mov ecx,[client] / mov eax,[ecx] / mov edx,[eax+74h] / push edi / call edx / mov ebp,eax / mov eax,[..]
+            // ra3: sub esp,0Ch / push ebp,esi / mov esi,ecx / mov ecx,[client] / mov eax,[ecx] / mov
             m = FindUnique(img, "83 EC 0C 55 56 8B F1 8B 0D ?? ?? ?? ?? 8B 01 8B 50 74 57 FF D2 8B E8 A1");
             if (m == 0) return null;
             r.Fn = m; r.Site = m + 13; r.Client = BitConverter.ToUInt32(img, (int)(m - ImageBase) + 9); r.Slot = 0x74; r.PushEdi = true;
@@ -2224,18 +2106,12 @@ static class Program
         g.L("run"); g.Rel(0xE9, r.Fn);
         Write(proc, stubVa, g.Done(0x40));
         Write(proc, r.Call + 1, BitConverter.GetBytes(stubVa - (r.Call + 5)));
-        // tw: mov eax,[ecx] / call [eax+78h] -> call frameStub. ra3: mov eax,[ecx] / mov edx,[eax+74h] / push edi / call edx -> push edi / call frameStub / nop / nop
+        // tw: mov eax,[ecx] / call [eax+78h] -> call frameStub
         if (r.PushEdi) Write(proc, r.Site, new byte[] { 0x57, 0xE8 }.Concat(BitConverter.GetBytes(frameStub - (r.Site + 6))).Concat(new byte[] { 0x90, 0x90 }).ToArray());
         else Write(proc, r.Site, new byte[] { 0xE8 }.Concat(BitConverter.GetBytes(frameStub - (r.Site + 5))).ToArray());
     }
 
-    // tw/kw turret bones: the draw code keeps prev/next turret angle and blends them with the engine interp, moving
-    // next -> prev on frames where interp is exactly 1.0. the time-based scheduler holds interp at 1.0 for a few
-    // frames after the last phase, so the turret shifts several times, snaps to the newest angle and then sits still
-    // for the rest of the tick (looks like 15 fps). the turret code now gets its own value: 1.0 on the first drawn
-    // frame of each 1.0 run (one shift per tick), after that the real time since then / tick length (< 1)
-    // ra3/uprising: same turret code (interp at [engine+60h], also shifts when interp equals a saved value), the load
-    // sits between test ebp,ebp and its je, so that stub keeps the flags and eax
+    // tw/kw turret bones
     class TurretSite { public uint Site, Engine; public int Len; public byte Off, Slot; public bool Keep; }
 
     static TurretSite FindTurretInterp(byte[] img)
@@ -2243,7 +2119,7 @@ static class Program
         // tw/kw: mov eax,[engine] / movss xmm0,[eax+48h] / mov eax,[edi+0Ch] / mov ebx,[eax+140h]
         uint m = FindUnique(img, "A1 ?? ?? ?? ?? F3 0F 10 40 48 8B 47 0C 8B 98 40 01 00 00");
         if (m != 0) return new TurretSite { Site = m, Engine = BitConverter.ToUInt32(img, (int)(m - ImageBase) + 1), Len = 10, Off = 0x48, Slot = 0x78 };
-        // ra3: mov eax,[engine] / mov ebp,[ecx+138h] / test ebp,ebp / movss xmm0,[eax+60h] / movss [esp+x],xmm0 / je
+        // ra3: mov eax,[engine] / mov ebp,[ecx+138h] / test ebp,ebp / movss xmm0,[eax+60h] / movss
         m = FindUnique(img, "A1 ?? ?? ?? ?? 8B A9 38 01 00 00 85 ED F3 0F 10 40 60 F3 0F 11 44 24 ?? 74");
         if (m != 0) return new TurretSite { Site = m + 13, Engine = BitConverter.ToUInt32(img, (int)(m - ImageBase) + 1), Len = 5, Off = 0x60, Slot = 0x74, Keep = true };
         return null;
@@ -2280,8 +2156,7 @@ static class Program
         a.E(0xA3); a.D(gFrame);
         if (batches)
         {
-            // with stock batches interp runs 1/2..1 and the next tick starts before it reaches 1.0, so "tick done" is
-            // phase 6 instead (same moment the old 1.0 marked: all phases of the tick ran)
+            // with stock batches interp runs 1/2..1 and the next tick starts before it reaches 1.0
             a.E(0xA1); a.D(engine); a.E(0x83, 0x78, sched.Phase, 0x06); a.J(0x75, "notone");   // cmp dword [eax+phase],6
         }
         else
@@ -2311,16 +2186,14 @@ static class Program
         Write(proc, site, new byte[] { 0xE8 }.Concat(BitConverter.GetBytes(stubVa - (site + 5))).Concat(Enumerable.Repeat((byte)0x90, t.Len - 5)).ToArray());
     }
 
-    // ra3/uprising (#14): knocked over lamp posts etc. ToppleUpdate turns the object once per logic tick, but static
-    // map objects have a template flag that copies into drawable+13Eh bit 4 = "don't blend between ticks", so the fall
-    // shows at the logic rate. while something is toppling that bit gets cleared and the normal blend takes over
+    // ra3/uprising
     class ToppleSite { public uint Hook; public int DrawOff, FlagOff; }
 
     static ToppleSite FindTopple(byte[] img)
     {
-        // ToppleUpdate::update: state checks, then cmp [edi+38h],0 / push ebx / mov ebx,[edi-8] (the object)
+        // ToppleUpdate::update
         uint h = FindUnique(img, "83 EC 4C 57 8B F9 8B 47 2C 85 C0 0F 84 ?? ?? ?? ?? 83 F8 02 0F 84 ?? ?? ?? ?? 83 7F 38 00 53 8B 5F F8");
-        // where the template flags are copied into the drawable: gives the flag byte and object->drawable offsets
+        // where the template flags are copied into the drawable
         uint f = FindUnique(img, "C1 E9 04 02 C9 02 C9 32 8F ?? ?? 00 00 6A 3C 80 E1 04 30 8F ?? ?? 00 00 8B 56 04 8B 8A ?? ?? 00 00 8B 86 ?? ?? 00 00");
         if (h == 0 || f == 0) return null;
         int o = (int)(f - ImageBase);
@@ -2340,25 +2213,18 @@ static class Program
         Write(proc, t.Hook, new byte[] { 0xE9 }.Concat(BitConverter.GetBytes(stubVa - (t.Hook + 5))).ToArray());
     }
 
-    // #13: the model draw update starts with "if not marked to animate this frame and it has an animation, return".
-    // the mark comes from the animation LOD controller, which only runs for models on screen and near enough to the
-    // camera, so off-screen (shadow still visible) and far models animate at the logic rate. the jne that skips the
-    // second test becomes jmp: every model updates every frame (costs some cpu). tested 2026-10-05: an off-screen air
-    // unit's shadow still moves choppy, so the shadow position comes from somewhere else. off unless offscreenanim=1
+    // #13: the model draw update starts with "if not marked to animate this frame
     static uint FindAnimGate(byte[] img)
     {
         // tw/kw: mov ebx,ecx / cmp byte [ebx+A8h],0 / jne / cmp dword [ebx+ACh],0 / jne skip
         uint m = FindUnique(img, "8B D9 80 BB ?? ?? 00 00 00 75 0D 83 BB ?? ?? 00 00 00 0F 85");
         if (m != 0) return m + 9;
-        // ra3: cmp byte [esi+CCh],0 / push edi / mov edi,[esi+4] / mov [esp+0Ch],edi / jne / cmp dword [esi+D0h],0 / jne skip
+        // ra3: cmp byte [esi+CCh],0 / push edi / mov edi,[esi+4] / mov [esp+0Ch],edi / jne / cmp
         m = FindUnique(img, "80 BE ?? ?? 00 00 00 57 8B 7E 04 89 7C 24 0C 75 ?? 83 BE ?? ?? 00 00 00 0F 85");
         return m != 0 ? m + 15 : 0;
     }
 
-    // ra3/uprising: vehicle and boat sway (#12). calcPhysicsXform steps a spring (pitch/roll, boat wobble) once per
-    // drawn frame, guarded by "locomotor+C4h != getFrame()", so at 240 it swings 8x fast. the guard gets a 30hz frame,
-    // and the result is kept at the end of the drawable's loco info (grown 70h -> 80h) so the frames in between still
-    // get the tilt instead of none
+    // ra3/uprising
     const string SwayPattern = "8B 0D ?? ?? ?? ?? 8B 01 8B 50 74 55 FF D2 8B E8 39 AE ?? ?? ?? ?? 0F 84 ?? ?? ?? ?? 8B 8F ?? ?? ?? ?? E8 ?? ?? ?? ?? 89 A8 ?? ?? ?? ?? 8B 46 04 8B 48 04 8B 41 ?? 83 C0 FF 83 F8 07 77 ?? FF 24 85";
 
     class SwaySite { public uint Guard, Skip, Alloc, LocoOff; public List<uint> Calls = new List<uint>(), AllocSites = new List<uint>(); }
@@ -2368,7 +2234,7 @@ static class Program
         uint m = FindUnique(img, SwayPattern);
         if (m == 0) return null;
         int o = (int)(m - ImageBase), end = TextEnd(img);
-        // push ebx / push edi / mov edi,ecx at the start: then [esp+14h] is the info pointer at the je
+        // push ebx / push edi / mov edi,ecx at the start
         if (!(img[o - 0x31] == 0x53 && img[o - 0x30] == 0x57 && img[o - 0x2F] == 0x8B && img[o - 0x2E] == 0xF9)) return null;
         var s = new SwaySite { Guard = m + 8, Skip = (uint)(m + 28 + BitConverter.ToInt32(img, o + 24)) };
         // the skip label returns bl: pop ebp / pop esi / pop edi / mov al,bl / pop ebx / ret 4
@@ -2378,13 +2244,13 @@ static class Program
         for (int i = o + 0x45; i < o + 0xB0; i++)
             if (img[i] == 0x8B && img[i + 1] == 0xCF && img[i + 2] == 0xE8) s.Calls.Add(ImageBase + (uint)i + 2);
         if (s.Calls.Count < 3) return null;
-        // every sway function starts: cmp [esi+loco],0 / jne / push 70h / call alloc / add esp,4 / ... / call ctor
+        // every sway function starts
         uint ctor = 0;
         foreach (uint c in s.Calls)
         {
             uint f = CallTarget(img, c);
             int fo = (int)(f - ImageBase), a = -1;
-            int p = -1;   // the push 70h (sometimes a push reg sits between the cmp and the jne)
+            int p = -1;   // the push 70h
             for (int i = fo; i < fo + 0x20 && p < 0; i++)
             {
                 if (img[i] != 0x83 || img[i + 1] != 0xBE || img[i + 6] != 0) continue;
@@ -2397,7 +2263,7 @@ static class Program
             if (ct == 0 || (s.LocoOff != 0 && (loco != s.LocoOff || alloc != s.Alloc || ct != ctor))) return null;
             s.LocoOff = loco; s.Alloc = alloc; ctor = ct;
         }
-        // every place that makes a loco info (sway functions + savegame load) has to get the bigger size
+        // every place that makes a loco info
         int ctorCalls = 0;
         for (int i = 0x1000; i < end - 5; i++)
         {
@@ -2433,7 +2299,7 @@ static class Program
         for (byte k = 0; k < 16; k += 4) a.E(0xC7, 0x40, (byte)(0x70 + k), 0, 0, 0, 0);   // mov dword [eax+70h+k],0
         a.L("null"); a.E(0xC3);
         Write(proc, allocStub, a.Done(0x40));
-        // sway function, then keep its result: push ebx / mov ebx,ecx / push info / push loco / call / copy / pop ebx / ret 8
+        // sway function
         var done = new Dictionary<uint, uint>();
         foreach (uint site in s.Calls)
         {
@@ -2460,11 +2326,7 @@ static class Program
         Write(proc, s.Guard + 16, u(cacheStub - (s.Guard + 20)));
     }
 
-    // tw/kw: the same vehicle sway as ra3 (#12), different code. the guard compares getFrame with the locomotor's
-    // +C0h and returns "no tilt" on a match, the four sway functions (cases 1-9) each make the drawable's 5Ch sway block
-    // at +22Ch. same fix: a 30hz frame in the guard, the block grows by 16 bytes for the last result, frames in between
-    // get that result. the guard's je is short, so the whole getFrame/cmp/je goes into a stub:
-    //   mov ecx,[client] / mov eax,[ecx] / push ebx / call [eax+78h] / mov ebx,eax / cmp [esi+C0h],ebx / je skip
+    // tw/kw: the same vehicle sway as ra3
     const string Cnc3SwayPattern = "8B 0D ?? ?? ?? ?? 8B 01 53 FF 50 78 8B D8 39 9E ?? ?? 00 00 74 ?? 8B 8F ?? ?? 00 00 E8 ?? ?? ?? ?? 89 98 ?? ?? 00 00 8B 46 04 8B 40 04 8B 40";
 
     class Cnc3SwaySite { public uint Guard, Skip, Client, FrameOff, BlockOff, Size, Alloc; public List<uint> Calls = new List<uint>(), AllocSites = new List<uint>(); }
@@ -2475,7 +2337,7 @@ static class Program
         if (m == 0) return null;
         int o = (int)(m - ImageBase), end = TextEnd(img);
         var s = new Cnc3SwaySite { Guard = m, Client = BitConverter.ToUInt32(img, o + 2), FrameOff = BitConverter.ToUInt32(img, o + 16), Skip = (uint)(m + 22 + (sbyte)img[o + 21]) };
-        // the stub writes the result flag [ebp-1] and reads the info pointer [ebp+8]: mov byte [ebp-1],0 must be set up before
+        // the stub writes the result flag [ebp-1] and reads the info pointer [ebp+8]
         bool flag = false;
         for (int i = o - 0x30; i < o; i++) if (img[i] == 0xC6 && img[i + 1] == 0x45 && img[i + 2] == 0xFF && img[i + 3] == 0x00) flag = true;
         if (!flag || s.Skip - (m + 8) > 127) return null;
@@ -2483,7 +2345,7 @@ static class Program
         for (int i = o + 0x25; i < o + 0xA0; i++)
             if (img[i] == 0xFF && img[i + 1] == 0x75 && img[i + 2] == 0x08 && img[i + 3] == 0x8B && img[i + 4] == 0xCF && img[i + 5] == 0x56 && img[i + 6] == 0xE8) s.Calls.Add(ImageBase + (uint)i + 6);
         if (s.Calls.Count != 4) return null;
-        // each starts: cmp [reg+block],0 (or ,edi) / jne / push size / call alloc / ... / call ctor / ... / mov [reg+block],eax
+        // each starts: cmp [reg+block],0
         uint ctor = 0;
         foreach (uint c in s.Calls)
         {
@@ -2513,8 +2375,7 @@ static class Program
     {
         Func<uint, byte[]> u = BitConverter.GetBytes;
         uint guardStub = mem, allocStub = mem + 0x60, thunks = mem + 0xA0;   // up to +1A0h
-        // ebx = ceil(getFrame() * 30 / fps), ZF set when this 30hz frame already stepped (then the kept result goes into
-        // the caller's info and the "tilt written" flag is set)
+        // ebx = ceil(getFrame() * 30 / fps)
         var g = new Asm(guardStub);
         g.E(0x8B, 0x0D); g.D(s.Client); g.E(0x8B, 0x01, 0xFF, 0x50, 0x78);           // mov ecx,[client] / mov eax,[ecx] / call [eax+78h]
         g.E(0x6B, 0xC0, 0x1E, 0x8B, 0x15); g.D(fpsVa);                               // imul eax,eax,30 / mov edx,[fps]
@@ -2533,7 +2394,7 @@ static class Program
         for (byte k = 0; k < 16; k += 4) a.E(0xC7, 0x40, (byte)(s.Size + k), 0, 0, 0, 0);
         a.L("null"); a.E(0xC3);
         Write(proc, allocStub, a.Done(0x40));
-        // sway function, then keep its result in the block: push ebx / mov ebx,ecx / push info / push loco / call / copy / pop ebx / ret 8
+        // sway function
         var done = new Dictionary<uint, uint>();
         foreach (uint site in s.Calls)
         {
@@ -2560,31 +2421,22 @@ static class Program
         Write(proc, s.Guard, p.ToArray());
     }
 
-    // ---- bfme2 ----
-    // render 30 / logic 5 next to each other like c&c3 (15/30), 6 phases per tick, same scheduler design.
-    // differences: compiled with cdq/idiv, and the frame limiter waits 1000 / (engine max fps [engine+0Ch] * net scale)
-    // instead of using the render fps global
-    // mov eax,1000 / cdq / idiv [render_fps] / mov [frame_ms],eax   (w3d ms per client frame)
+    // ---- bfme2 ---- render 30 / logic 5 next to each other like c&c3
     static readonly int[] BfmeFrameMsSig = { 0xB8, 0xE8, 0x03, 0x00, 0x00, 0x99, 0xF7, 0x3D, -1, -1, -1, -1, 0xA3 };
-    // call [timeGetTime] / fild [esi+0Ch] / mov edi,eax / fmul [netscale] / fdivr [1000.0] / call _ftol
+    // call [timeGetTime] / fild [esi+0Ch] / mov edi,eax / fmul [netscale] / fdivr [1000.0]
     const string BfmeLimiterPattern = "FF 15 ?? ?? ?? ?? DB 46 0C 8B F8 D8 0D ?? ?? ?? ?? D8 3D ?? ?? ?? ?? E8";
-    // per-frame update: mov ecx,[esi+phase] / cmp ecx,6 / jne / cmp byte [esi+x],0 / je / mov eax,[fps] / cdq / idiv [logic]
+    // per-frame update
     const string BfmeAdvancePattern = "8B 4E ?? 83 F9 06 75 ?? 80 7E ?? 00 74 ?? A1";
     // its interp: [ecx+interp] = [ecx+phase] / [ecx+framesPerTick], clamped 0..1
     const string BfmeInterpPattern = "F3 0F 2A 49 ?? F3 0F 2A 41 ?? F3 0F 5E C1 0F 57 C9 0F 2F C8 F3 0F 11 41";
-    // exit of the per-frame update: mov ecx,[global] / mov eax,[ecx] / call [eax+x] / pop edi / pop esi / pop ebx / leave / ret
+    // exit of the per-frame update
     const string BfmeExitPattern = "8B 0D ?? ?? ?? ?? 8B 01 FF 90 ?? 00 00 00 5F 5E 5B C9 C3";
     // dispatch(phase): mov edx,[esi] / push eax / mov ecx,esi / call [edx+x]
     const string BfmeDispatchPattern = "8B 16 50 8B CE FF 92 ?? 00 00 00";
 
-    // game client's frame length setter (w3d ms per drawn frame): cvttss2si eax,[esp+4] / mov [frame_ms],eax / ret 4.
-    // it gets set to 1000/30 at runtime, which put animations, water etc back on 30 fps time (8x fast at 240)
+    // game client's frame length setter
     const string BfmeFrameMsSetterPattern = "F3 0F 2C 44 24 04 A3 ?? ?? ?? ?? C2 04 00";
-    // W3DView::scrollBy (SCROLL_RESOLUTION 250), same fix as c&c3: scale the step through its vtable slot
-    // the spell store (power purchase screen) only takes clicks when its extern "AptSpellStore::InputEnabled" says 1:
-    // game mode 6, or the in-game UI's flag byte +16h. above 30 fps that flag is off when the click arrives, so buying
-    // powers does nothing (other unlockers have the same bug). getter: ... cmp [logic+110h],6 / je yes / cmp [ui+16h],0 ...
-    // -> make the je a jmp, the store always takes input (it can only be opened by the player anyway)
+    // W3DView::scrollBy
     const string BfmeSpellStorePattern = "33 C0 39 44 24 04 75 ?? 38 44 24 0C 75 ?? 8B 0D ?? ?? ?? ?? 83 B9 ?? ?? 00 00 06 74 ?? 8B 0D ?? ?? ?? ?? 38 41 ?? B8 ?? ?? ?? ?? 74 ?? B8";
     const string BfmeScrollByPattern = "55 8B EC 83 EC 64 A1 ?? ?? ?? ?? 80 B8 C0 00 00 00 00 53 8B D9 74 06 80 7B 44 00 75 09 80 BB 01 25 00 00 00 74 07 33 C0 E9";
 
@@ -2611,8 +2463,7 @@ static class Program
             // cvtsi2ss xmm,[fps] / cvtsi2ss xmm,[logic] (the same ratio as floats)
             else if (img[i - 4] == 0xF3 && img[i - 3] == 0x0F && img[i - 2] == 0x2A && img[i + 4] == 0xF3 && img[i + 5] == 0x0F && img[i + 6] == 0x2A && at(i + 8, L))
                 b.Fps.Add(ImageBase + (uint)i);
-            // rotwk 2.02 edits the two phase ratio sites (phase dispatcher: idiv [own 8], tick boundary: mov eax,2 / jmp).
-            // that fights the time scheduler (move hitching), so put the stock idiv [logic] back and redirect them like stock
+            // rotwk 2.02 edits the two phase ratio sites
             else if (img[i - 1] == 0xA1 && img[i + 4] == 0x99 && img[i + 5] == 0xF7 && img[i + 6] == 0x3D && !at(i + 7, L)
                      && img[i + 11] == 0x56 && img[i + 12] == 0x6A && img[i + 13] == 0x06)
             { b.Fps.Add(ImageBase + (uint)i); b.Restore.Add(Tuple.Create(ImageBase + (uint)i + 7, L)); }
@@ -2626,9 +2477,7 @@ static class Program
         b.Limiter = lim + 6; b.TimeIat = BitConverter.ToUInt32(img, (int)(lim + 2 - ImageBase));
         uint set = FindUnique(img, BfmeFrameMsSetterPattern);
         if (set != 0 && BitConverter.ToUInt32(img, (int)(set - ImageBase) + 7) == b.FrameMs) b.FrameMsSetter = set;
-        // the spell store's per-frame update (sends SetSpellButtonState to the flash movie, but only when a button's
-        // state changed). wrapper: mov ecx,[store] / test ecx,ecx / je ret / jmp update / ret. found as the one whose
-        // update calls the function that uses the "SetSpellButtonState" string
+        // the spell store's per-frame update
         int sbo = IndexOf(img, Encoding.ASCII.GetBytes("SetSpellButtonState\0"));
         if (sbo > 0)
         {
@@ -2671,7 +2520,7 @@ static class Program
                 uint ex = 0, disp = 0;
                 foreach (uint m in FindAll(img, BfmeExitPattern)) if (m > adv && m < adv + 0x180) { ex = m; break; }
                 foreach (uint m in FindAll(img, BfmeDispatchPattern)) if (m > adv && m < adv + 0x180) { disp = BitConverter.ToUInt32(img, (int)(m - ImageBase) + 7); break; }
-                // the per-phase client call right after the advance: mov ecx,[g] / mov ecx,[ecx+off] / imul ecx,ecx,10 / lea eax,[ecx+eax-1] / push edi / push eax / call fn
+                // the per-phase client call right after the advance
                 uint pre = FindUnique(img, "8B 0D ?? ?? ?? ?? 8B 49 ?? 6B C9 0A 8D 44 01 FF 57 50 E8");
                 if (ex != 0 && disp != 0 && pre > adv && pre < adv + 0x40)
                     b.Sched = new SchedSite { Advance = adv, Exit = ex, Phase = phase, Interp = img[(int)(ip - ImageBase) + 24], Dispatch = disp, Tick = 3000 / 5,
@@ -2701,7 +2550,7 @@ static class Program
             var p = new List<byte> { 0xE8 }; p.AddRange(BitConverter.GetBytes(m + 0x300 - (b.Limiter + 5)));
             Write(proc, b.Limiter, p.ToArray());
         }
-        // frame length setter: frame_ms = arg * 30 / fps (follows whatever the game asks for, in our frames)
+        // frame length setter
         if (b.FrameMsSetter != 0 && On("animclock"))
         {
             Write(proc, m + 0x350, BitConverter.GetBytes(30f / fps));
@@ -2713,9 +2562,7 @@ static class Program
             Write(proc, b.FrameMsSetter, p.ToArray());
         }
         if (b.SpellStore != 0 && On("spellstore") && fps > 30) Write(proc, b.SpellStore, new byte[] { 0xEB });
-        // spell store update at most every 33 ms, like stock 30 fps: at 240 the next update came ~4 ms after SetLayout,
-        // before the flash movie stepped and built its buttons, so the button states went nowhere and (cached as sent)
-        // were never sent again: no buyable buttons. jmp update -> throttle stub
+        // spell store update at most every 33 ms
         if (b.StoreJmp != 0 && On("spellstore") && fps > 30)
         {
             uint stub = m + 0xE00, last = m + 0xE80;
@@ -2770,8 +2617,7 @@ static class Program
         return (int)(BitConverter.ToUInt32(img, sec + 12) + BitConverter.ToUInt32(img, sec + 16));
     }
 
-    // exe file -> memory layout, so offset == va - ImageBase everywhere.
-    // most builds are already laid out that way, bfme2 1.06 isn't (.text at file 0x600, va 0x1000)
+    // exe file -> memory layout
     static byte[] MapImage(byte[] file)
     {
         int pe = BitConverter.ToInt32(file, 0x3C), n = BitConverter.ToUInt16(file, pe + 6), opt = pe + 24;
@@ -2788,12 +2634,7 @@ static class Program
         return img;
     }
 
-    // particle manager update: sim step (fixed 30hz, no delta) then rebuilds draw buckets.
-    // sim too often = smoke goes white. only throttle the sim, skipping the rebuild crashes
-    //   83 EC 08 53 55 56 57   sub esp,8 / push ebx,ebp,esi,edi
-    //   8B F9 89 7C 24 14      mov edi,ecx / mov [esp+14h],edi
-    //   E8 <sim>               call simulate          <- patched
-    //   C7 87 84 00 00 00 00 00 00 00   mov dword [edi+84h],0
+    // particle manager update
     static readonly int[] ParticleUpdateSig = {
         0x83, 0xEC, 0x08, 0x53, 0x55, 0x56, 0x57, 0x8B, 0xF9, 0x89, 0x7C, 0x24, 0x14,
         0xE8, -1, -1, -1, -1, 0xC7, 0x87, 0x84, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 };
@@ -2808,8 +2649,7 @@ static class Program
         return site;
     }
 
-    // every "mov eax,[ecx] / call [eax+74h]" (GameClient::getFrame) in our own stubs becomes "call realclock" (same 5
-    // bytes), so the 30 hz clocks of fades, 2d anims, pulses, blinks and turrets run on real time
+    // every "mov eax,[ecx] / call [eax+74h]"
     static void UseRealClock(IntPtr proc, uint mem)
     {
         byte[] m = Read(proc, mem, 0xF00), pat = { 0x8B, 0x01, 0xFF, 0x50, 0x74 };
@@ -2826,9 +2666,7 @@ static class Program
         }
     }
 
-    // acc += 30; if (acc >= fps) { acc -= fps; jmp simulate } else ret
-    // with the real clock: acc += 30 * (real frames since last call) instead of 30, capped below one step so a slow
-    // stretch doesn't leave a backlog
+    // acc += 30; if
     static void ThrottleParticles(IntPtr proc, uint site, uint sim, uint fpsVa, uint accVa, uint stubVa)
     {
         if (realClockFn != 0)
@@ -2892,9 +2730,7 @@ static class Program
 
     const uint MEM_COMMIT = 0x1000, MEM_RESERVE = 0x2000, PAGE_EXECUTE_READWRITE = 0x40;
 
-    // memory helpers. the patch code only goes through these, so it's the same in both builds
-    // proc 0 = dll inside the game, plain in-process memory access.
-    // otherwise RA3HighFps.exe on linux patching the suspended game from outside (see Launch)
+    // memory helpers
     static IntPtr Alloc(IntPtr proc, int size)
     {
         return proc == IntPtr.Zero ? VirtualAlloc(IntPtr.Zero, (UIntPtr)size, MEM_COMMIT | MEM_RESERVE, PAGE_EXECUTE_READWRITE)
@@ -2913,9 +2749,7 @@ static class Program
         else if (!ReadProcessMemory(proc, (IntPtr)va, b, (UIntPtr)n, out done)) throw new Exception(string.Format("couldn't read game memory at 0x{0:X}", va));
         return b;
     }
-    // patch memory bookkeeping: every write into it is remembered, and one that lands on part of an earlier one
-    // (a stub or table running into another) goes in the log. 1.9.4's invisible units (#22) were the sway thunks
-    // sitting on top of the scheduler's interp table
+    // patch memory bookkeeping
     static uint patchMem, patchMemSize;
     static List<Tuple<uint, int>> memWrites = new List<Tuple<uint, int>>();
     static List<string> memOverlaps = new List<string>();
@@ -2958,13 +2792,7 @@ static class Program
     [DllImport("kernel32.dll")] static extern IntPtr GetCurrentProcess();
 }
 
-// particle vertex shader edit (vs_3_0). stock: a gpu particle is drawn while age <= lifetime, where age = Time*30 - birth
-// in 30 fps frames. the game only ever drew 30 frames a second, so a particle was seen at whole-frame ages and the next
-// one (respawned every 2 frames for glows like the instant generator) was already there at age 2. above 30 fps the
-// frames in between show ages past the lifetime: the shader collapses the quad and the effect blinks (#29).
-// edit: expired = lifetime < age - slack (Program.PfxSlack: just under one 30 fps frame), so a particle keeps the screen
-// time stock gave it, lifetime + 1 frame, and a respawning glow hands over to its next particle without a gap or double. age/lifetime (the colour curve input) is capped at 1,
-// the last value stock could show. only shaders with the exact age / slt / rcp / mul shape are touched.
+// particle vertex shader edit
 
 static class PfxShader
 {
@@ -3033,7 +2861,7 @@ static class PfxShader
                 SrcMod(t[n.At + 2]) == 0 && SrcMod(t[n.At + 3]) == 0)
                 mul = n;
         }
-        // no slt: shaders without the expiry test (the low detail vs_2_0 ones) only get the colour cap, the cpu removal hides them
+        // no slt: shaders without the expiry test
         if (rcp == null || mul == null) { why = "shape: rcp " + (rcp != null) + " mul " + (mul != null); return null; }
         if (maxConst >= 250) { why = "constant c" + maxConst + " in use"; return null; }
         const int K = 255;
@@ -3066,10 +2894,7 @@ static class PfxShader
 }
 
 
-// the particle shader edit needs the shaders as the game creates them: the game's Direct3DCreate9 import ->
-// IDirect3D9::CreateDevice (slot 16) -> IDirect3DDevice9::CreateVertexShader (slot 91). only that one call is hooked,
-// every shader that isn't a known particle shader goes through untouched, and if the edited one is refused the
-// original is created instead
+// the particle shader edit needs the shaders as the game creates them
 static class D3DHook
 {
     [UnmanagedFunctionPointer(CallingConvention.StdCall)] delegate IntPtr Create9Fn(uint sdk);
@@ -3097,7 +2922,7 @@ static class D3DHook
         hookDevicePtr = Marshal.GetFunctionPointerForDelegate(hookCreateDevice);
         hookVSPtr = Marshal.GetFunctionPointerForDelegate(hookCreateVS);
         WritePtr(slot, Marshal.GetFunctionPointerForDelegate(hookCreate9));
-        // one line after a minute (the shaders are made while the game loads): how many got the edit, for bug reports
+        // one line after a minute
         IntPtr mine9 = Marshal.ReadIntPtr(slot);
         new Thread(() =>
         {
@@ -3142,10 +2967,7 @@ static class D3DHook
                 IntPtr s = Marshal.ReadIntPtr(Marshal.ReadIntPtr(ppDev)) + 91 * 4, cur = Marshal.ReadIntPtr(s);
                 if (cur != hookVSPtr && origCreateVS == null)
                 {
-                    // the device's vtable is a per-device copy that d3d9 rewrites later, so a slot hook gets lost after
-                    // the first few shaders. hook the function itself: windows' d3d9 starts it with push imm8 / mov
-                    // eax,imm32 (7 bytes, no addresses), which move to a trampoline as they are. anything else
-                    // (dxvk, other builds): the slot hook
+                    // the device's vtable is a per-device copy that d3d9 rewrites later
                     var b = new byte[7]; Marshal.Copy(cur, b, 0, 7);
                     IntPtr tramp = b[0] == 0x6A && b[2] == 0xB8 ? VirtualAlloc(IntPtr.Zero, (UIntPtr)16, 0x3000, 0x40) : IntPtr.Zero;
                     if (tramp != IntPtr.Zero)
@@ -3200,7 +3022,7 @@ static class D3DHook
         return origCreateVS(self, func, ppShader);
     }
 
-    // a vertex shader's tokens up to and including the end token; null for anything that isn't vs_2_0 / vs_2_x / vs_3_0
+    // a vertex shader's tokens up to and including the end token
     static uint[] ReadShader(IntPtr f)
     {
         if (f == IntPtr.Zero) return null;
@@ -3263,8 +3085,7 @@ public static class DllEntry
     public static int Launch(IntPtr proc, string exe, string dir) { return Program.Launch(proc, exe, dir); }
 }
 
-// what the drop-in dll calls since 1.9.5. wine-mono's ExecuteInDefaultAppDomain needs a namespace in the type
-// name (no dot = E_INVALIDARG, 80070057), so plain "DllEntry" never ran under proton. real .net takes either
+// what the drop-in dll calls since 1.9.5
 namespace SAGEUnlocked
 {
     public static class DllEntry

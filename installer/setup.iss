@@ -9,7 +9,7 @@
 #ifndef Files
   #define Files "..\bin"
 #endif
-#define Version "1.9.7"
+#define Version "1.9.6"
 
 [Setup]
 AppId=TheeHorse.CnCFpsUnlocker
@@ -41,8 +41,9 @@ Source: "{#Files}\RA3HighFps.exe"; Flags: dontcopy
 var
   GamePage: TWizardPage;
   GameList: TNewCheckListBox;
-  FpsBox, ZoomBox: TNewComboBox;
-  ZoomCheck: TNewCheckBox;
+  FpsBox, ZoomBox, ShadowBox: TNewComboBox;
+  ZoomCheck, ShadowCheck: TNewCheckBox;
+  ShadowVal: String;
   GameNames, GameDirs: array of String;
   Done: String;
   OldLauncher: Boolean;
@@ -333,6 +334,11 @@ begin
   ZoomBox.Enabled := ZoomCheck.Checked;
 end;
 
+procedure ShadowCheckClick(Sender: TObject);
+begin
+  ShadowBox.Enabled := ShadowCheck.Checked;
+end;
+
 procedure AddFolderClick(Sender: TObject);
 var dir: String;
 begin
@@ -430,6 +436,31 @@ begin
     end;
   end;
   ZoomBox.Enabled := ZoomCheck.Checked;
+
+  ShadowCheck := TNewCheckBox.Create(GamePage);
+  ShadowCheck.Parent := GamePage.Surface;
+  ShadowCheck.Caption := 'Sharper shadows, experimental (uses more video memory)';
+  ShadowCheck.SetBounds(0, ZoomCheck.Top + ZoomCheck.Height + ScaleY(12), GamePage.SurfaceWidth - ScaleX(90), ScaleY(17));
+  ShadowCheck.OnClick := @ShadowCheckClick;
+
+  ShadowBox := TNewComboBox.Create(GamePage);
+  ShadowBox.Parent := GamePage.Surface;
+  ShadowBox.Style := csDropDownList;
+  ShadowBox.SetBounds(GamePage.SurfaceWidth - ScaleX(80), ShadowCheck.Top - ScaleY(3), ScaleX(80), ScaleY(23));
+  ShadowBox.Items.Add('4096');
+  ShadowBox.Items.Add('8192');
+  ShadowBox.ItemIndex := 0;
+  for i := 0 to GetArrayLength(GameDirs) - 1 do
+  begin
+    z := ReadIni(IniPath(GameDirs[i]), 'shadowmap');
+    if (z = '4096') or (z = '8192') then
+    begin
+      ShadowCheck.Checked := True;
+      if z = '8192' then ShadowBox.ItemIndex := 1;
+      break;
+    end;
+  end;
+  ShadowBox.Enabled := ShadowCheck.Checked;
 end;
 
 { ---- installing ---- }
@@ -456,11 +487,12 @@ begin
   if not FileExists(ini) then
   begin
     SetArrayLength(lines, 1);
-    lines[0] := '; SAGE Unlocked settings (fps: multiple of 15, 30-240; zoom: ra3 only, 1 = off)';
+    lines[0] := '; SAGE Unlocked settings (fps: multiple of 15, 30-240; zoom: ra3 only, 1 = off; shadowmap: 4096 or 8192, 0 = off)';
     SaveStringsToFile(ini, lines, False);
   end;
   SetIni(ini, 'fps', IntToStr(fps));
   SetIni(ini, 'zoom', zoom);
+  SetIni(ini, 'shadowmap', ShadowVal);
   Result := True;
 end;
 
@@ -522,6 +554,8 @@ begin
       0: zoom := '1.25';
       1: zoom := '1.5';
     end;
+  ShadowVal := '0';
+  if ShadowCheck.Checked then ShadowVal := ShadowBox.Items[ShadowBox.ItemIndex];
   Done := '';
   OldLauncher := False;
   for i := 0 to GameList.Items.Count - 1 do
