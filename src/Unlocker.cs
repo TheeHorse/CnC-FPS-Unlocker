@@ -301,6 +301,7 @@ static class Program
         bool sched = schedSite != null && On("sched");   // skip=sched falls back to the plain fps redirect
         HeldCamera held = FindHeldCamera(img);
         Cnc3Fx fx = FindCnc3Fx(img, modelStep);
+        TracerSites tracers = FindTracers(img);   // tw/kw
         uint trailLock = FindTrailLock(img);
         SwaySite sway = FindSway(img);
         Cnc3SwaySite sway3 = sway == null ? FindCnc3Sway(img) : null;   // tw/kw
@@ -329,7 +330,7 @@ static class Program
             new { n = "anim2d", ok = anim2d.Count > 0 }, new { n = "models", ok = modelStep != 0 }, new { n = "particles", ok = pfxSite != 0 },
             new { n = "fades", ok = fades.Count > 0 || fx.Fades.Count > 0 }, new { n = "zoom", ok = zoomSite != 0 },
             new { n = "camsteps", ok = fx.CameraStep != 0 }, new { n = "fxframes", ok = fx.Frame5.Count > 0 }, new { n = "throb", ok = fx.Throb != 0 },
-            new { n = "shake", ok = fx.Shake != 0 }, new { n = "traillock", ok = trailLock != 0 }, new { n = "sway", ok = sway != null || sway3 != null }, new { n = "stream", ok = stream != 0 }, new { n = "audio", ok = audioSlot != 0 }, new { n = "floattext", ok = floatText != null }, new { n = "fpsframes", ok = fpsFrames.Count > 0 }, new { n = "blinks", ok = blinks.Sites.Count > 0 }, new { n = "tint", ok = blinks.Tint.Count > 0 }, new { n = "modeltimer", ok = blinks.TimerUpdate != 0 }, new { n = "glow", ok = glow != null }, new { n = "pfxcull", ok = pfxCull != null }, new { n = "clock", ok = clock != null }, new { n = "radarfade", ok = radarFade != null }, new { n = "drawfade", ok = drawFade.Count > 0 }, new { n = "fxdelays", ok = elapsed.Count > 0 }, new { n = "pulse", ok = pulse != null }, new { n = "turrets", ok = turretSite != null }, new { n = "topple", ok = topple != null }, new { n = "offscreenanim", ok = animGate != 0 } };
+            new { n = "shake", ok = fx.Shake != 0 }, new { n = "traillock", ok = trailLock != 0 }, new { n = "sway", ok = sway != null || sway3 != null }, new { n = "stream", ok = stream != 0 }, new { n = "audio", ok = audioSlot != 0 }, new { n = "floattext", ok = floatText != null }, new { n = "fpsframes", ok = fpsFrames.Count > 0 }, new { n = "blinks", ok = blinks.Sites.Count > 0 }, new { n = "tint", ok = blinks.Tint.Count > 0 }, new { n = "modeltimer", ok = blinks.TimerUpdate != 0 }, new { n = "glow", ok = glow != null }, new { n = "pfxcull", ok = pfxCull != null }, new { n = "clock", ok = clock != null }, new { n = "radarfade", ok = radarFade != null }, new { n = "drawfade", ok = drawFade.Count > 0 }, new { n = "fxdelays", ok = elapsed.Count > 0 }, new { n = "pulse", ok = pulse != null }, new { n = "turrets", ok = turretSite != null }, new { n = "topple", ok = topple != null }, new { n = "offscreenanim", ok = animGate != 0 }, new { n = "tracers", ok = tracers != null } };
         found = "found: " + string.Join(" ", have.Where(h => h.ok).Select(h => h.n)) + " | missing: " + string.Join(" ", have.Where(h => !h.ok).Select(h => h.n));
 
         // +0 fps, +8 particle accum, +40 stubs. the first page is full, newer things go in the second (+1000 and up)
@@ -383,7 +384,13 @@ static class Program
         if (On("construction") && unpack != 0) PatchUnpack(proc, img, unpack, (uint)mem + 0x200, sched ? (uint)mem + 0x3C : 0, (uint)mem + 0x4E0);   // construction
         if (On("anim2d") && anim2d.Count > 0) PatchAnim2D(proc, img, anim2d, (uint)mem, (uint)mem + 0x100);
         Write(proc, (uint)mem + 0x10, BitConverter.GetBytes(1f / fps));   // 1/fps: model, camera and laser steps
+        // smooth tracers replace the 30hz tracer gate (the reset still gets the 30hz frame)
+        bool smoothTracers = tracers != null && fx.TracerUpdate == tracers.Gate && On("tracers") && On("fxframes") && fps > 30;
+        uint tracerGate = fx.TracerUpdate;
+        if (smoothTracers) fx.TracerUpdate = 0;
         PatchCnc3Fx(proc, fx, fps, (uint)mem, (uint)mem + 0x10, (uint)mem + 0xD00, (uint)mem + 0xD40);
+        fx.TracerUpdate = tracerGate;
+        if (smoothTracers) PatchTracers(proc, tracers, fps, (uint)mem, (uint)mem + 0x1680);   // +1680h..+1710h
         if (On("traillock") && trailLock != 0) PatchTrailLock(proc, trailLock, (uint)mem + 0xE00);
         if (On("sway") && sway != null && fps > 30) PatchSway(proc, img, sway, (uint)mem, (uint)mem + 0xE40);
         if (On("sway") && sway3 != null && fps > 30) PatchCnc3Sway(proc, img, sway3, (uint)mem, (uint)mem + 0x1300);
@@ -434,7 +441,7 @@ static class Program
             (stream != 0 ? " | stream " + hex(new[] { stream }) : "") +
             (audioSlot != 0 ? " | audio " + hex(new[] { audioSlot, audioFn }) : "") +
             (floatText != null ? " | floattext " + hex(new[] { floatText.Add, floatText.Update }) : "") +
-            (fpsFrames.Count > 0 ? " | fpsframes " + hex(fpsFrames) : "") + (radarFade != null ? " | radarfade " + hex(new[] { radarFade.Call, radarFade.Site }) : "") + (drawFade.Count > 0 ? " | drawfade " + hex(drawFade) : "") + (elapsed.Count > 0 ? " | fxdelays " + hex(elapsed) : "") + (glow != null ? " | glow " + hex(new[] { glow.Fn }) : "") + (pfxCull != null ? " | pfxcull " + hex(new[] { pfxCull.Site, pfxCull.Time }) : "") +
+            (fpsFrames.Count > 0 ? " | fpsframes " + hex(fpsFrames) : "") + (radarFade != null ? " | radarfade " + hex(new[] { radarFade.Call, radarFade.Site }) : "") + (drawFade.Count > 0 ? " | drawfade " + hex(drawFade) : "") + (elapsed.Count > 0 ? " | fxdelays " + hex(elapsed) : "") + (glow != null ? " | glow " + hex(new[] { glow.Fn }) : "") + (pfxCull != null ? " | pfxcull " + hex(new[] { pfxCull.Site, pfxCull.Time }) : "") + (tracers != null ? " | tracers " + hex(new[] { tracers.Gate, tracers.Spawn, tracers.Step, tracers.Spacing, tracers.Bullet }) : "") +
             (blinks.Sites.Count > 0 ? " | blinks " + hex(blinks.Sites) : "") +
             (blinks.Tint.Count > 0 ? " | tint " + hex(blinks.Tint.Concat(new[] { blinks.TintInstall9 }).Concat(blinks.TintLen)) : "") +
             (blinks.TimerUpdate != 0 ? " | modeltimer " + hex(new[] { blinks.TimerInit, blinks.TimerUpdate }) : "") +
@@ -1042,6 +1049,68 @@ static class Program
         uint sh = FindUnique(img, ShakePattern);
         if (sh != 0 && FloatAt(img, dw(sh, 27)) == 0.75f) fx.Shake = sh + 27;
         return fx;
+    }
+
+    // tw/kw tracers (rifle / mg / gun walker / stormrider shots): W3DTracerManager::update runs when the frame changed,
+    // steps every emitter (moves 0..1 along its path by a fixed step, spawns a random count of bullets spread over
+    // that step) and every bullet (moves by its speed), all per call in 30 fps units. fxframes gave it the 30hz frame:
+    // right speed, but the shots only moved 30 times a second. now it runs every drawn frame, still with the 30hz frame
+    // for the lifetimes, and the four per-call amounts are scaled by 30 / fps (tw 1.10 addresses):
+    //   gate    0x834280  mov eax,[ecx] / push edi / call [eax+78h] / cmp eax,[esi+90h] / je skip
+    //   spawn   0x834099  movss xmm0,[ebp+0Ch] / addss xmm0,[esi+7Ch]      (random count + carried fraction)
+    //   step    0x8340DC  movss xmm0,[ecx+1Ch]                             (emitter progress per call)
+    //   spacing 0x83411C  divss xmm0,[ebp-4]                               (1 / count, bullets spread over one step)
+    //   bullet  0x8083F1  movss xmm3,[esi+58h]                             (bullet speed per call)
+    const string TracerGatePattern = "8B 01 57 FF 50 78 3B 86 90 00 00 00 0F 84";
+    const string TracerSpawnPattern = "D9 5D 0C F3 0F 10 45 0C F3 0F 58 46 7C F3 0F 11 45 0C D9 45 0C";
+    const string TracerBulletPattern = "3B 46 6C 0F 83 ?? ?? ?? ?? F3 0F 10 56 18 F3 0F 10 5E 58 F3 0F 10 46 20";
+    class TracerSites { public uint Gate, Skip, Spawn, Step, Spacing, Bullet; }
+
+    static TracerSites FindTracers(byte[] img)
+    {
+        uint g = FindUnique(img, TracerGatePattern), s = FindUnique(img, TracerSpawnPattern), b = FindUnique(img, TracerBulletPattern);
+        if (g == 0 || s == 0 || b == 0) return null;
+        Func<uint, string, bool> at = (va, hex) => hex.Split(' ').Select((t, i) => Convert.ToByte(t, 16) == img[(int)(va - ImageBase) + i]).All(x => x);
+        // step and spacing sit at fixed distances from the spawn add in all four builds
+        if (!at(s + 0x46, "F3 0F 10 41 1C 8D 86 88 00 00 00 F3 0F 58 00") || !at(s + 0x84, "85 DB F3 0F 5E 45 FC F3 0F 11 4E 34")) return null;
+        return new TracerSites { Gate = g, Skip = g + 18 + BitConverter.ToUInt32(img, (int)(g - ImageBase) + 14),
+                                 Spawn = s + 3, Step = s + 0x46, Spacing = s + 0x86, Bullet = b + 14 };
+    }
+
+    // mem: k = 30/fps, last drawn frame, then the stubs (+10h gate, +40h spawn, +60h step, +70h spacing, +80h bullet)
+    static void PatchTracers(IntPtr proc, TracerSites t, int fps, uint fpsVa, uint mem)
+    {
+        uint k = mem, last = mem + 4, gate = mem + 0x10, spawn = mem + 0x40, step = mem + 0x60, spacing = mem + 0x70, bullet = mem + 0x80;
+        Write(proc, k, BitConverter.GetBytes(30f / fps));
+        Write(proc, last, BitConverter.GetBytes(0u));
+        // eax = ceil(frame * 30 / fps), ZF set when the drawn frame didn't change (ecx = client)
+        var g = new Asm(gate);
+        g.E(0x8B, 0x01, 0xFF, 0x50, 0x78, 0x3B, 0x05); g.D(last); g.J(0x74, "same");   // mov eax,[ecx] / call [eax+78h] / cmp eax,[last] / je
+        g.E(0xA3); g.D(last);                                                           // mov [last],eax
+        g.E(0x6B, 0xC0, 0x1E, 0x8B, 0x15); g.D(fpsVa);                                  // imul eax,eax,30 / mov edx,[fps]
+        g.E(0x8D, 0x44, 0x10, 0xFF, 0x33, 0xD2, 0xF7, 0x35); g.D(fpsVa);                // lea eax,[eax+edx-1] / xor edx,edx / div [fps]
+        g.E(0x85, 0xE4);                                                                // test esp,esp (ZF=0)
+        g.L("same"); g.E(0xC3);
+        Write(proc, gate, g.Done(0x30));
+        Func<uint, byte[], byte[]> scaled = (va, load) =>
+        {
+            var a = new Asm(va); a.E(load); a.E(0xF3, 0x0F, 0x59, 0x05); a.D(k); a.E(0xC3); return a.Done(0x10);   // <load> / mulss xmm,[k] / ret
+        };
+        var sp = new Asm(spawn);
+        sp.E(0xF3, 0x0F, 0x10, 0x45, 0x0C, 0xF3, 0x0F, 0x59, 0x05); sp.D(k);   // movss xmm0,[ebp+0Ch] / mulss xmm0,[k]
+        sp.E(0xF3, 0x0F, 0x58, 0x46, 0x7C, 0xC3);                              // addss xmm0,[esi+7Ch] / ret
+        Write(proc, spawn, sp.Done(0x20));
+        Write(proc, step, scaled(step, new byte[] { 0xF3, 0x0F, 0x10, 0x41, 0x1C }));
+        Write(proc, spacing, scaled(spacing, new byte[] { 0xF3, 0x0F, 0x5E, 0x45, 0xFC }));
+        Write(proc, bullet, scaled(bullet, new byte[] { 0xF3, 0x0F, 0x10, 0x5E, 0x58 }));
+        Func<uint, uint, byte[]> call = (site, to) => new byte[] { 0xE8 }.Concat(BitConverter.GetBytes(to - (site + 5))).ToArray();
+        // gate: push edi / call stub / jz skip / nop x6 (18 bytes)
+        Write(proc, t.Gate, new byte[] { 0x57 }.Concat(call(t.Gate + 1, gate)).Concat(new byte[] { 0x0F, 0x84 })
+                                .Concat(BitConverter.GetBytes(t.Skip - (t.Gate + 12))).Concat(Enumerable.Repeat((byte)0x90, 6)).ToArray());
+        Write(proc, t.Spawn, call(t.Spawn, spawn).Concat(Enumerable.Repeat((byte)0x90, 5)).ToArray());
+        Write(proc, t.Step, call(t.Step, step));
+        Write(proc, t.Spacing, call(t.Spacing, spacing));
+        Write(proc, t.Bullet, call(t.Bullet, bullet));
     }
 
     // stepVa holds 1/fps already. stubVa: 30hz frame stub (slot 78h), dataVa: 2 floats
