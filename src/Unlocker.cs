@@ -24,8 +24,85 @@ static class Program
     {
         int r = Patch(IntPtr.Zero, Process.GetCurrentProcess().MainModule.FileName, dir, "drop-in DLL");
         if (r == 1 && ReadIni(IniFile(dir), "crcdump") == "1") new Thread(() => CrcDump(dir)) { IsBackground = true }.Start();
+        // particle shaders (#29): only from inside the game, the shaders are edited as the game creates them
+        if (r == 1 && pfxShaderGame && patchFps > 30 && On("pfxshader"))
+        {
+            string err;
+            try { err = D3DHook.Install(dir, PfxSlack(patchFps)); } catch (Exception e) { err = e.Message; }
+            AppendLog(dir, err == null ? "particle shaders: hooked\r\n" : "particle shaders: not hooked, " + err + "\r\n");
+        }
         return r;
     }
+
+    static int patchFps;   // for the particle shader edit, set by ApplyPatches
+    static bool clockFixed;   // the effect clock runs at real speed (PatchClock)
+
+    // how far past its lifetime a gpu particle stays (30 fps frames), shader and removal alike. stock checks once per
+    // 30 fps frame, so a particle shows for its lifetime + 1 frame of screen time. a glow that respawns every lifetime+1
+    // frames then has its old particle gone exactly when the new one comes: no gap, no overlap. with the clock at real
+    // speed the respawn comes at age lifetime+1 exactly, so anything in [1 - 30/fps, 1) keeps that; the middle leaves
+    // room for the 30 hz updates landing a drawn frame early or late (75, 135 fps). without the clock fix the clock runs
+    // slow (1000/fps truncated) and only the low end fits short glows
+    static float PfxSlack(int fps) { return clockFixed ? 1f - 15f / fps : 1f - 30f / fps; }
+
+    // effect clock: the w3d client clock (particles, model animation, shader Time) goes up by frameMs = 1000 / fps
+    // once per drawn frame, an integer set once at startup: 13 at 75 fps, so it ran at 975 ms a second while the 30 hz
+    // particle updates went by real time. a glow that respawns every 16 updates with a 15 frame lifetime (soviet
+    // reactor) met its old particle at age 15.6 instead of stock's 15.84: a 1 frame gap without the shader slack, a
+    // 1 frame double (bright flash) with it. the clock now adds 1000 / fps with the remainder carried (13, 13, 14 ...)
+    //   init:     mov eax,1000 / xor edx,edx / div [render] / mov [frameMs],eax / ret
+    //   per frame: mov eax,[clock] / add eax,[frameMs] / push eax / mov [clock],eax / call     (add -> call stub)
+    //   catch-up:  mov ecx,[frameMs] / mov eax,[clock] / imul ecx,esi / add eax,ecx / push eax / mov [clock],eax
+    //   tw/kw catch-up: mov eax,[frameMs] / imul eax,esi / add [clock],eax / push [clock]     (first 8 bytes -> call stub)
+    class ClockSites { public uint Add, CatchUp, Clock; public bool Cnc3; }
+
+    static ClockSites FindClockAdvance(byte[] img, uint render)
+    {
+        Func<uint, uint> dw = va => BitConverter.ToUInt32(img, (int)(va - ImageBase));
+        uint init = FindUnique(img, "B8 E8 03 00 00 33 D2 F7 35 ?? ?? ?? ?? A3 ?? ?? ?? ?? C3");
+        if (init == 0 || dw(init + 9) != render) return null;
+        uint frameMs = dw(init + 14);
+        uint add = FindUnique(img, "A1 ?? ?? ?? ?? 03 05 ?? ?? ?? ?? 50 A3 ?? ?? ?? ?? E8");
+        if (add == 0) return null;
+        uint clock = dw(add + 1);
+        if (dw(add + 7) != frameMs || dw(add + 13) != clock) return null;
+        uint cu = FindUnique(img, "8B 0D ?? ?? ?? ?? A1 ?? ?? ?? ?? 0F AF CE 03 C1 50 A3");
+        if (cu != 0 && dw(cu + 2) == frameMs && dw(cu + 7) == clock && dw(cu + 18) == clock)
+            return new ClockSites { Add = add + 5, CatchUp = cu, Clock = clock };
+        cu = FindUnique(img, "A1 ?? ?? ?? ?? 0F AF C6 01 05 ?? ?? ?? ?? FF 35");
+        if (cu != 0 && dw(cu + 1) == frameMs && dw(cu + 10) == clock && dw(cu + 16) == clock)
+            return new ClockSites { Add = add + 5, CatchUp = cu, Clock = clock, Cnc3 = true };
+        return null;
+    }
+
+    static void PatchClock(IntPtr proc, ClockSites c, uint fpsVa, uint at)
+    {
+        uint rem = at, s1 = at + 0x10, s2 = at + 0x40;
+        Write(proc, rem, BitConverter.GetBytes(0u));
+        // eax = clock: eax += (rem + 1000) / fps, remainder back to rem
+        var a = new Asm(s1);
+        a.E(0x51, 0x52, 0x8B, 0xC8, 0xA1); a.D(rem); a.E(0x05); a.D(1000); a.E(0x33, 0xD2, 0xF7, 0x35); a.D(fpsVa);
+        a.E(0x89, 0x15); a.D(rem); a.E(0x03, 0xC1, 0x5A, 0x59, 0xC3);
+        Write(proc, s1, a.Done(0x30));
+        Write(proc, c.Add, new byte[] { 0xE8 }.Concat(BitConverter.GetBytes(s1 - (c.Add + 5))).Concat(new byte[] { 0x90 }).ToArray());
+        if (c.Cnc3)
+        {
+            // tw/kw catch-up for esi frames: eax = (rem + 1000 * esi) / fps, the game's add [clock],eax stays
+            var t = new Asm(s2);
+            t.E(0x52, 0x69, 0xC6); t.D(1000); t.E(0x03, 0x05); t.D(rem); t.E(0x33, 0xD2, 0xF7, 0x35); t.D(fpsVa);
+            t.E(0x89, 0x15); t.D(rem); t.E(0x5A, 0xC3);
+            Write(proc, s2, t.Done(0x30));
+            Write(proc, c.CatchUp, new byte[] { 0xE8 }.Concat(BitConverter.GetBytes(s2 - (c.CatchUp + 5))).Concat(Enumerable.Repeat((byte)0x90, 3)).ToArray());
+            return;
+        }
+        // catch-up for esi frames: ecx = (rem + 1000 * esi) / fps, eax = clock
+        var b = new Asm(s2);
+        b.E(0x52, 0x69, 0xC6); b.D(1000); b.E(0x03, 0x05); b.D(rem); b.E(0x33, 0xD2, 0xF7, 0x35); b.D(fpsVa);
+        b.E(0x89, 0x15); b.D(rem); b.E(0x8B, 0xC8, 0x5A, 0xA1); b.D(c.Clock); b.E(0xC3);
+        Write(proc, s2, b.Done(0x30));
+        Write(proc, c.CatchUp, new byte[] { 0xE8 }.Concat(BitConverter.GetBytes(s2 - (c.CatchUp + 5))).Concat(Enumerable.Repeat((byte)0x90, 9)).ToArray());
+    }
+    static bool pfxShaderGame;   // the particle removal was found: ra3 / uprising / tw / kw
 
     static uint realClockFn;   // set by PatchScheduler when the effects real clock is on
     static uint newTickFlag, modeCheckFn;   // batches: the "new tick?" flag and the engine function that now returns it
@@ -240,6 +317,7 @@ static class Program
         PulseSite pulse = FindPulse(img);
         GlowSite glow = FindGlow(img, pulse);
         PfxCull pfxCull = FindPfxCull(img, render);
+        ClockSites clock = FindClockAdvance(img, render);
         TurretSite turretSite = FindTurretInterp(img);
         ToppleSite topple = FindTopple(img);
         uint animGate = FindAnimGate(img);
@@ -251,7 +329,7 @@ static class Program
             new { n = "anim2d", ok = anim2d.Count > 0 }, new { n = "models", ok = modelStep != 0 }, new { n = "particles", ok = pfxSite != 0 },
             new { n = "fades", ok = fades.Count > 0 || fx.Fades.Count > 0 }, new { n = "zoom", ok = zoomSite != 0 },
             new { n = "camsteps", ok = fx.CameraStep != 0 }, new { n = "fxframes", ok = fx.Frame5.Count > 0 }, new { n = "throb", ok = fx.Throb != 0 },
-            new { n = "shake", ok = fx.Shake != 0 }, new { n = "traillock", ok = trailLock != 0 }, new { n = "sway", ok = sway != null || sway3 != null }, new { n = "stream", ok = stream != 0 }, new { n = "audio", ok = audioSlot != 0 }, new { n = "floattext", ok = floatText != null }, new { n = "fpsframes", ok = fpsFrames.Count > 0 }, new { n = "blinks", ok = blinks.Sites.Count > 0 }, new { n = "tint", ok = blinks.Tint.Count > 0 }, new { n = "modeltimer", ok = blinks.TimerUpdate != 0 }, new { n = "glow", ok = glow != null }, new { n = "pfxcull", ok = pfxCull != null }, new { n = "radarfade", ok = radarFade != null }, new { n = "drawfade", ok = drawFade.Count > 0 }, new { n = "fxdelays", ok = elapsed.Count > 0 }, new { n = "pulse", ok = pulse != null }, new { n = "turrets", ok = turretSite != null }, new { n = "topple", ok = topple != null }, new { n = "offscreenanim", ok = animGate != 0 } };
+            new { n = "shake", ok = fx.Shake != 0 }, new { n = "traillock", ok = trailLock != 0 }, new { n = "sway", ok = sway != null || sway3 != null }, new { n = "stream", ok = stream != 0 }, new { n = "audio", ok = audioSlot != 0 }, new { n = "floattext", ok = floatText != null }, new { n = "fpsframes", ok = fpsFrames.Count > 0 }, new { n = "blinks", ok = blinks.Sites.Count > 0 }, new { n = "tint", ok = blinks.Tint.Count > 0 }, new { n = "modeltimer", ok = blinks.TimerUpdate != 0 }, new { n = "glow", ok = glow != null }, new { n = "pfxcull", ok = pfxCull != null }, new { n = "clock", ok = clock != null }, new { n = "radarfade", ok = radarFade != null }, new { n = "drawfade", ok = drawFade.Count > 0 }, new { n = "fxdelays", ok = elapsed.Count > 0 }, new { n = "pulse", ok = pulse != null }, new { n = "turrets", ok = turretSite != null }, new { n = "topple", ok = topple != null }, new { n = "offscreenanim", ok = animGate != 0 } };
         found = "found: " + string.Join(" ", have.Where(h => h.ok).Select(h => h.n)) + " | missing: " + string.Join(" ", have.Where(h => !h.ok).Select(h => h.n));
 
         // +0 fps, +8 particle accum, +40 stubs. the first page is full, newer things go in the second (+1000 and up)
@@ -323,23 +401,20 @@ static class Program
         if (On("fxdelays") && elapsed.Count > 0 && fps > 30) PatchElapsedSites(proc, img, elapsed, (uint)mem, (uint)mem + 0x1500);   // +1500h..+1560h
         if (On("radarfade") && radarFade != null && fps > 30) PatchRadarFade(proc, radarFade, (uint)mem, (uint)mem + 0x14A0);   // +14A0h..+1500h
         if (On("models") && modelStep != 0) Redirect(proc, new List<uint> { modelStep }, (uint)mem + 0x10);   // 1/fps instead of 1/30
-        if (On("particles") && throttlePfx && pfxSite != 0)
+        if (On("particles") && throttlePfx && pfxSite != 0) ThrottleParticles(proc, pfxSite, pfxSim, (uint)mem, (uint)mem + 8, (uint)mem + 0x40);
+        clockFixed = On("clock") && clock != null && fps > 30;
+        if (clockFixed) PatchClock(proc, clock, (uint)mem, (uint)mem + 0x1600);   // +1600h..+1670h
+        // pfxcull: the expired-particle removal reads the time minus the particle shader's slack (see PfxShader), so a
+        // particle isn't dropped before the shader would hide it. mov eax,[time] / sub eax,slack / ret
+        if (On("pfxcull") && pfxCull != null && fps > 30)
         {
-            // pfxcull: the sim goes through a stub that keeps the particle time of this sim step, the expired-particle
-            // removal reads that instead of the live time (see FindPfxCull)
-            uint simTarget = pfxSim;
-            if (On("pfxcull") && pfxCull != null && fps > 30)
-            {
-                uint save = (uint)mem + 0x15D0, stub = (uint)mem + 0x15C0;
-                var s = new Asm(stub);
-                s.E(0xA1); s.D(pfxCull.Time); s.E(0xA3); s.D(save); s.Rel(0xE9, pfxSim);   // mov eax,[time] / mov [save],eax / jmp sim
-                Write(proc, stub, s.Done(0x10));
-                Write(proc, save, BitConverter.GetBytes(BitConverter.ToUInt32(img, (int)(pfxCull.Time - ImageBase))));
-                Write(proc, pfxCull.Site, new byte[] { 0xA1 }.Concat(BitConverter.GetBytes(save)).ToArray());   // mov eax,[save]
-                simTarget = stub;
-            }
-            ThrottleParticles(proc, pfxSite, simTarget, (uint)mem, (uint)mem + 8, (uint)mem + 0x40);
+            uint stub = (uint)mem + 0x15C0;
+            var s = new Asm(stub);
+            s.E(0xA1); s.D(pfxCull.Time); s.E(0x2D); s.D((uint)Math.Ceiling(PfxSlack(fps) * 1000 / 30)); s.E(0xC3);
+            Write(proc, stub, s.Done(0x10));
+            Write(proc, pfxCull.Site, new byte[] { 0xE8 }.Concat(BitConverter.GetBytes(stub - (pfxCull.Site + 5))).ToArray());   // call stub
         }
+        patchFps = fps; pfxShaderGame = pfxCull != null;
         if (realClockFn != 0) UseRealClock(proc, (uint)mem);
         FlushCode(proc);
 
@@ -1911,13 +1986,12 @@ static class Program
         }
     }
 
-    // gpu particle removal (soviet reactor glow flash, any effect made of overlapping long-lived particles): once per
-    // drawn frame the manager takes the w3d time x fps x 0.001 (particle frames, fps still 30) and drops every
-    // particle whose end time has passed. new particles only come from the sim, which runs 30 times a second. at 30
-    // fps both happen on the same frame; above that a particle could be dropped on a drawn frame between two sims and
-    // its follow-up only appeared at the next sim: nothing drawn for 1-3 frames, a blink. the removal now uses the
-    // time of the last sim step, so particles go on the sim's clock as at stock.
-    // ra3: push ecx / push esi / mov esi,ecx / call time / imul eax,[fps] / ... (call -> mov eax,[save], time fn is mov eax,[g] / ret)
+    // gpu particle removal (instant generator glow #29, soviet reactor): once per drawn frame the manager takes the w3d
+    // time x fps x 0.001 (particle frames, fps still 30) and drops every particle whose end time (birth + lifetime) has
+    // passed. the glows respawn a 1-frame particle every 2 frames; at 30 fps the old one is only seen at ages 0 and 0.99,
+    // above that the frames in between dropped it (and the shader hid it, see PfxShader). the removal now reads the
+    // time minus the same slack as the shader edit.
+    // ra3: push ecx / push esi / mov esi,ecx / call time / imul eax,[fps] / ... (call -> call stub, time fn is mov eax,[g] / ret)
     // tw/kw: mov eax,[time] / imul eax,[fps] / test / mov [ebp-4],eax / push esi / mov esi,ecx
     class PfxCull { public uint Site, Time; }
 
@@ -2770,6 +2844,303 @@ static class Program
     static extern bool ReadProcessMemory(IntPtr h, IntPtr addr, byte[] buf, UIntPtr size, out UIntPtr read);
     [DllImport("kernel32.dll")] static extern bool FlushInstructionCache(IntPtr h, IntPtr addr, UIntPtr size);
     [DllImport("kernel32.dll")] static extern IntPtr GetCurrentProcess();
+}
+
+// particle vertex shader edit (vs_3_0). stock: a gpu particle is drawn while age <= lifetime, where age = Time*30 - birth
+// in 30 fps frames. the game only ever drew 30 frames a second, so a particle was seen at whole-frame ages and the next
+// one (respawned every 2 frames for glows like the instant generator) was already there at age 2. above 30 fps the
+// frames in between show ages past the lifetime: the shader collapses the quad and the effect blinks (#29).
+// edit: expired = lifetime < age - slack (Program.PfxSlack: just under one 30 fps frame), so a particle keeps the screen
+// time stock gave it, lifetime + 1 frame, and a respawning glow hands over to its next particle without a gap or double. age/lifetime (the colour curve input) is capped at 1,
+// the last value stock could show. only shaders with the exact age / slt / rcp / mul shape are touched.
+
+static class PfxShader
+{
+    const int ADD = 2, MUL = 5, RCP = 6, MIN = 10, SLT = 12, DEF = 0x51, COMMENT = 0xFFFE, END = 0xFFFF;
+    const int TEMP = 0, INPUT = 1, CONST = 2;
+
+    static int RegType(uint p) { return (int)(((p >> 28) & 7) | ((p >> 8) & 0x18)); }
+    static int RegNum(uint p) { return (int)(p & 0x7FF); }
+    static int Swz(uint p) { return (int)((p >> 16) & 0xFF); }
+    static int SrcMod(uint p) { return (int)((p >> 24) & 0xF); }
+    static int Mask(uint p) { return (int)((p >> 16) & 0xF); }
+    static bool Rel(uint p) { return (p & 0x2000) != 0; }
+    static int Rep(int c) { return c | c << 2 | c << 4 | c << 6; }
+    // single component of a replicated swizzle (.x .y .z .w), -1 otherwise
+    static int SwzComp(uint p) { int s = Swz(p), c = s & 3; return s == Rep(c) ? c : -1; }
+    static int MaskComp(uint p) { int m = Mask(p); for (int c = 0; c < 4; c++) if (m == 1 << c) return c; return -1; }
+    static uint Reg(int type, int num) { return 0x80000000u | (uint)(type & 7) << 28 | (uint)(type & 0x18) << 8 | (uint)num; }
+    static uint Dst(int type, int num, int comp) { return Reg(type, num) | 1u << (16 + comp); }
+    static uint Src(int type, int num, int comp, bool neg) { return Reg(type, num) | (uint)Rep(comp) << 16 | (neg ? 1u << 24 : 0); }
+    static uint Op(int op, int len) { return (uint)op | (uint)len << 24; }
+    static bool Is(uint p, int type, int num, int comp) { return !Rel(p) && RegType(p) == type && RegNum(p) == num && SwzComp(p) == comp; }
+
+    class Ins { public int At, Op, Len; }
+
+    // null: not a particle shader of the known shape, leave it alone
+    public static uint[] Edit(uint[] t, float slack, out string why)
+    {
+        why = "";
+        if (t.Length < 2 || (t[0] != 0xFFFE0300 && t[0] != 0xFFFE0200 && t[0] != 0xFFFE0201)) { why = "not vs_2_0 / vs_3_0"; return null; }   // same tokens and instructions in all three
+        var ins = new List<Ins>();
+        int maxConst = -1;
+        for (int i = 1; i < t.Length;)
+        {
+            int op = (int)(t[i] & 0xFFFF);
+            if (op == END) break;
+            if (op == COMMENT) { i += 1 + (int)((t[i] >> 16) & 0x7FFF); continue; }
+            int len = (int)((t[i] >> 24) & 0xF);
+            ins.Add(new Ins { At = i, Op = op, Len = len });
+            for (int k = 1; k <= len && i + k < t.Length; k++)
+                if ((t[i + k] & 0x80000000) != 0 && RegType(t[i + k]) == CONST) maxConst = Math.Max(maxConst, RegNum(t[i + k]));
+            i += 1 + len;
+        }
+        // age: add rA.a, cT.x, -v1.w (either order)
+        Ins age = null; int ageReg = -1, ageComp = -1;
+        foreach (var n in ins)
+        {
+            if (n.Op != ADD || n.Len != 3) continue;
+            uint d = t[n.At + 1], s0 = t[n.At + 2], s1 = t[n.At + 3];
+            uint v = Is(s0, INPUT, 1, 3) ? s0 : Is(s1, INPUT, 1, 3) ? s1 : 0, c = v == s0 ? s1 : s0;
+            if (v == 0 || SrcMod(v) != 1 || RegType(c) != CONST || SrcMod(c) != 0 || Rel(c) || RegType(d) != TEMP || MaskComp(d) < 0) continue;
+            if (age != null) { why = "two age instructions"; return null; }
+            age = n; ageReg = RegNum(d); ageComp = MaskComp(d);
+        }
+        if (age == null) { why = "no age"; return null; }
+        // expired: slt rB.b, v0.w, rA.a
+        Ins slt = null; Ins rcp = null; Ins mul = null; int rcpReg = -1, rcpComp = -1;
+        foreach (var n in ins)
+        {
+            if (n.At <= age.At) continue;
+            if (n.Op == SLT && n.Len == 3 && slt == null && Is(t[n.At + 2], INPUT, 0, 3) && SrcMod(t[n.At + 2]) == 0 && Is(t[n.At + 3], TEMP, ageReg, ageComp) && SrcMod(t[n.At + 3]) == 0 && MaskComp(t[n.At + 1]) >= 0 && RegType(t[n.At + 1]) == TEMP)
+                slt = n;
+            else if (n.Op == RCP && n.Len == 2 && rcp == null && Is(t[n.At + 2], INPUT, 0, 3) && SrcMod(t[n.At + 2]) == 0 && RegType(t[n.At + 1]) == TEMP && MaskComp(t[n.At + 1]) >= 0)
+            { rcp = n; rcpReg = RegNum(t[n.At + 1]); rcpComp = MaskComp(t[n.At + 1]); }
+            else if (n.Op == MUL && n.Len == 3 && rcp != null && mul == null && RegType(t[n.At + 1]) == TEMP && MaskComp(t[n.At + 1]) >= 0 &&
+                ((Is(t[n.At + 2], TEMP, ageReg, ageComp) && Is(t[n.At + 3], TEMP, rcpReg, rcpComp)) || (Is(t[n.At + 3], TEMP, ageReg, ageComp) && Is(t[n.At + 2], TEMP, rcpReg, rcpComp))) &&
+                SrcMod(t[n.At + 2]) == 0 && SrcMod(t[n.At + 3]) == 0)
+                mul = n;
+        }
+        // no slt: shaders without the expiry test (the low detail vs_2_0 ones) only get the colour cap, the cpu removal hides them
+        if (rcp == null || mul == null) { why = "shape: rcp " + (rcp != null) + " mul " + (mul != null); return null; }
+        if (maxConst >= 250) { why = "constant c" + maxConst + " in use"; return null; }
+        const int K = 255;
+        int sltAt = slt != null ? slt.At : -1, sltReg = slt != null ? RegNum(t[slt.At + 1]) : 0, sltComp = slt != null ? MaskComp(t[slt.At + 1]) : 0;
+        int mulReg = RegNum(t[mul.At + 1]), mulComp = MaskComp(t[mul.At + 1]);
+        var o = new List<uint> { t[0] };
+        // def c255, slack, 1, 0, 0
+        o.Add(Op(DEF, 5)); o.Add(Reg(CONST, K) | 0xFu << 16);
+        o.Add(BitConverter.ToUInt32(BitConverter.GetBytes(slack), 0)); o.Add(BitConverter.ToUInt32(BitConverter.GetBytes(1f), 0)); o.Add(0); o.Add(0);
+        for (int i = 1; i < t.Length; i++)
+        {
+            if (i == sltAt)
+            {
+                // add rB.b, rA.a, -c255.x / slt rB.b, v0.w, rB.b
+                o.Add(Op(ADD, 3)); o.Add(Dst(TEMP, sltReg, sltComp)); o.Add(Src(TEMP, ageReg, ageComp, false)); o.Add(Src(CONST, K, 0, true));
+                o.Add(t[i]); o.Add(t[i + 1]); o.Add(t[i + 2]); o.Add(Src(TEMP, sltReg, sltComp, false));
+                i += 3; continue;
+            }
+            o.Add(t[i]);
+            if (i == mul.At)
+            {
+                for (int k = 1; k <= mul.Len; k++) o.Add(t[i + k]);
+                // min rN.n, rN.n, c255.y
+                o.Add(Op(MIN, 3)); o.Add(Dst(TEMP, mulReg, mulComp)); o.Add(Src(TEMP, mulReg, mulComp, false)); o.Add(Src(CONST, K, 1, false));
+                i += mul.Len;
+            }
+        }
+        return o.ToArray();
+    }
+}
+
+
+// the particle shader edit needs the shaders as the game creates them: the game's Direct3DCreate9 import ->
+// IDirect3D9::CreateDevice (slot 16) -> IDirect3DDevice9::CreateVertexShader (slot 91). only that one call is hooked,
+// every shader that isn't a known particle shader goes through untouched, and if the edited one is refused the
+// original is created instead
+static class D3DHook
+{
+    [UnmanagedFunctionPointer(CallingConvention.StdCall)] delegate IntPtr Create9Fn(uint sdk);
+    [UnmanagedFunctionPointer(CallingConvention.StdCall)] delegate int CreateDeviceFn(IntPtr self, uint adapter, uint type, IntPtr wnd, uint flags, IntPtr pp, IntPtr ppDev);
+    [UnmanagedFunctionPointer(CallingConvention.StdCall)] delegate int CreateVSFn(IntPtr self, IntPtr func, IntPtr ppShader);
+    // kept in statics so the GC never collects a delegate the game still calls
+    static Create9Fn origCreate9, hookCreate9;
+    static CreateDeviceFn origCreateDevice, hookCreateDevice;
+    static CreateVSFn origCreateVS, hookCreateVS;
+    static IntPtr hookDevicePtr, hookVSPtr;
+    static float slack;
+    static int edited, refused, seenCreate9, seenDevice, seenVS;
+    static IntPtr iatSlot, devSlot, codeHook;
+    static string lastError = "";
+
+    // null = hooked, else why not
+    public static string Install(string dir, float pfxSlack)
+    {
+        slack = pfxSlack;
+        IntPtr slot = FindImport("d3d9.dll", "Direct3DCreate9");
+        if (slot == IntPtr.Zero) return "no Direct3DCreate9 import";
+        iatSlot = slot;
+        origCreate9 = (Create9Fn)Marshal.GetDelegateForFunctionPointer(Marshal.ReadIntPtr(slot), typeof(Create9Fn));
+        hookCreate9 = Create9Hook; hookCreateDevice = CreateDeviceHook; hookCreateVS = CreateVSHook;
+        hookDevicePtr = Marshal.GetFunctionPointerForDelegate(hookCreateDevice);
+        hookVSPtr = Marshal.GetFunctionPointerForDelegate(hookCreateVS);
+        WritePtr(slot, Marshal.GetFunctionPointerForDelegate(hookCreate9));
+        // one line after a minute (the shaders are made while the game loads): how many got the edit, for bug reports
+        IntPtr mine9 = Marshal.ReadIntPtr(slot);
+        new Thread(() =>
+        {
+            Thread.Sleep(60000);
+            string s = "particle shaders: vertex shaders " + seenVS + ", edited " + edited + (refused > 0 ? ", refused " + refused : "");
+            try { if (Marshal.ReadIntPtr(iatSlot) != mine9) s += ", import hook replaced"; if (codeHook == IntPtr.Zero) s += ", no code hook"; else if (Marshal.ReadByte(codeHook) != 0xE9) s += ", code hook replaced"; } catch { }
+            Log(dir, s + (lastError != "" ? ", error: " + lastError : ""));
+        }) { IsBackground = true }.Start();
+        return null;
+    }
+
+    static void Log(string dir, string s) { try { File.AppendAllText(Path.Combine(dir, "SAGEUnlocked.log"), s + "\r\n"); } catch { } try { File.AppendAllText(Path.Combine(Path.GetTempPath(), "SAGEUnlocked.log"), s + "\r\n"); } catch { } }
+
+    static IntPtr Create9Hook(uint sdk)
+    {
+        IntPtr d3d = origCreate9(sdk);
+        Interlocked.Increment(ref seenCreate9);
+        try
+        {
+            if (d3d != IntPtr.Zero)
+            {
+                IntPtr s = Marshal.ReadIntPtr(d3d) + 16 * 4, cur = Marshal.ReadIntPtr(s);
+                if (cur != hookDevicePtr && origCreateDevice == null)
+                {
+                    origCreateDevice = (CreateDeviceFn)Marshal.GetDelegateForFunctionPointer(cur, typeof(CreateDeviceFn));
+                    WritePtr(s, hookDevicePtr);
+                }
+            }
+        }
+        catch (Exception x) { lastError = "create9: " + x.Message; }
+        return d3d;
+    }
+
+    static int CreateDeviceHook(IntPtr self, uint adapter, uint type, IntPtr wnd, uint flags, IntPtr pp, IntPtr ppDev)
+    {
+        int hr = origCreateDevice(self, adapter, type, wnd, flags, pp, ppDev);
+        Interlocked.Increment(ref seenDevice);
+        try
+        {
+            if (hr >= 0 && ppDev != IntPtr.Zero && Marshal.ReadIntPtr(ppDev) != IntPtr.Zero)
+            {
+                IntPtr s = Marshal.ReadIntPtr(Marshal.ReadIntPtr(ppDev)) + 91 * 4, cur = Marshal.ReadIntPtr(s);
+                if (cur != hookVSPtr && origCreateVS == null)
+                {
+                    // the device's vtable is a per-device copy that d3d9 rewrites later, so a slot hook gets lost after
+                    // the first few shaders. hook the function itself: windows' d3d9 starts it with push imm8 / mov
+                    // eax,imm32 (7 bytes, no addresses), which move to a trampoline as they are. anything else
+                    // (dxvk, other builds): the slot hook
+                    var b = new byte[7]; Marshal.Copy(cur, b, 0, 7);
+                    IntPtr tramp = b[0] == 0x6A && b[2] == 0xB8 ? VirtualAlloc(IntPtr.Zero, (UIntPtr)16, 0x3000, 0x40) : IntPtr.Zero;
+                    if (tramp != IntPtr.Zero)
+                    {
+                        var t = new byte[12]; Array.Copy(b, t, 7);
+                        t[7] = 0xE9; Array.Copy(BitConverter.GetBytes((int)((long)cur + 7 - ((long)tramp + 12))), 0, t, 8, 4);
+                        Marshal.Copy(t, 0, tramp, 12);
+                        origCreateVS = (CreateVSFn)Marshal.GetDelegateForFunctionPointer(tramp, typeof(CreateVSFn));
+                        var j = new byte[7]; j[0] = 0xE9; Array.Copy(BitConverter.GetBytes((int)((long)hookVSPtr - ((long)cur + 5))), 0, j, 1, 4); j[5] = 0x90; j[6] = 0x90;
+                        uint old;
+                        if (!VirtualProtect(cur, (UIntPtr)7, 0x40, out old)) throw new Exception("couldn't unprotect CreateVertexShader");
+                        Marshal.Copy(j, 0, cur, 7);
+                        VirtualProtect(cur, (UIntPtr)7, old, out old);
+                        FlushInstructionCache(GetCurrentProcess(), cur, (UIntPtr)7);
+                        codeHook = cur;
+                    }
+                    else
+                    {
+                        origCreateVS = (CreateVSFn)Marshal.GetDelegateForFunctionPointer(cur, typeof(CreateVSFn));
+                        WritePtr(s, hookVSPtr);
+                        devSlot = s;
+                    }
+                }
+            }
+        }
+        catch (Exception x) { lastError = "device: " + x.Message; }
+        return hr;
+    }
+
+    static int CreateVSHook(IntPtr self, IntPtr func, IntPtr ppShader)
+    {
+        uint[] e = null;
+        Interlocked.Increment(ref seenVS);
+        try
+        {
+            uint[] t = ReadShader(func);
+            string why;
+            if (t != null) e = PfxShader.Edit(t, slack, out why);
+        }
+        catch (Exception x) { e = null; lastError = "shader: " + x.Message; }
+        if (e != null)
+        {
+            var h = GCHandle.Alloc(e, GCHandleType.Pinned);
+            try
+            {
+                int hr = origCreateVS(self, h.AddrOfPinnedObject(), ppShader);
+                if (hr >= 0) { Interlocked.Increment(ref edited); return hr; }
+                Interlocked.Increment(ref refused);
+            }
+            finally { h.Free(); }
+        }
+        return origCreateVS(self, func, ppShader);
+    }
+
+    // a vertex shader's tokens up to and including the end token; null for anything that isn't vs_2_0 / vs_2_x / vs_3_0
+    static uint[] ReadShader(IntPtr f)
+    {
+        if (f == IntPtr.Zero) return null;
+        uint v = (uint)Marshal.ReadInt32(f);
+        if (v != 0xFFFE0300 && v != 0xFFFE0200 && v != 0xFFFE0201) return null;
+        int i = 1;
+        while (i < 0x10000)
+        {
+            uint tok = (uint)Marshal.ReadInt32(f, i * 4);
+            if (tok == 0x0000FFFF) { i++; break; }
+            i += 1 + (int)((tok & 0xFFFF) == 0xFFFE ? (tok >> 16) & 0x7FFF : (tok >> 24) & 0xF);
+        }
+        if (i >= 0x10000) return null;
+        var t = new uint[i];
+        for (int k = 0; k < i; k++) t[k] = (uint)Marshal.ReadInt32(f, k * 4);
+        return t;
+    }
+
+    // the exe's import address table slot for dll!fn (the game itself, not a dll)
+    static IntPtr FindImport(string dll, string fn)
+    {
+        IntPtr b = Process.GetCurrentProcess().MainModule.BaseAddress;
+        int pe = Marshal.ReadInt32(b, 0x3C), imp = Marshal.ReadInt32(b, pe + 0x80);
+        if (imp == 0) return IntPtr.Zero;
+        for (int d = imp; Marshal.ReadInt32(b, d + 12) != 0; d += 20)
+        {
+            if (!string.Equals(Marshal.PtrToStringAnsi(b + Marshal.ReadInt32(b, d + 12)), dll, StringComparison.OrdinalIgnoreCase)) continue;
+            int names = Marshal.ReadInt32(b, d), iat = Marshal.ReadInt32(b, d + 16);
+            if (names == 0) names = iat;
+            for (int k = 0; ; k++)
+            {
+                int e = Marshal.ReadInt32(b, names + k * 4);
+                if (e == 0) break;
+                if (e < 0) continue;   // by ordinal
+                if (Marshal.PtrToStringAnsi(b + e + 2) == fn) return b + iat + k * 4;
+            }
+        }
+        return IntPtr.Zero;
+    }
+
+    static void WritePtr(IntPtr at, IntPtr v)
+    {
+        uint old;
+        if (!VirtualProtect(at, (UIntPtr)4, 0x04, out old)) throw new Exception("couldn't unprotect 0x" + at.ToString("X"));
+        Marshal.WriteIntPtr(at, v);
+        VirtualProtect(at, (UIntPtr)4, old, out old);
+    }
+
+    [DllImport("kernel32.dll")] static extern IntPtr VirtualAlloc(IntPtr addr, UIntPtr size, uint type, uint protect);
+    [DllImport("kernel32.dll")] static extern bool FlushInstructionCache(IntPtr h, IntPtr addr, UIntPtr size);
+    [DllImport("kernel32.dll")] static extern IntPtr GetCurrentProcess();
+    [DllImport("kernel32.dll")] static extern bool VirtualProtect(IntPtr addr, UIntPtr size, uint protect, out uint old);
 }
 
 // for the drop-in dll (ExecuteInDefaultAppDomain wants static int Method(string))
