@@ -16,7 +16,7 @@ using System.Threading;
 
 static class Program
 {
-    public const string Version = "1.9.6";   // keep in step with installer/setup.iss
+    public const string Version = "1.9.7";   // keep in step with installer/setup.iss
     const uint ImageBase = 0x400000;
 
     // called from inside the game (dll/proxy.c)
