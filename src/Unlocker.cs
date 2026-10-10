@@ -283,6 +283,7 @@ static class Program
         Cnc3Fx fx = FindCnc3Fx(img, modelStep);
         TracerSites tracers = FindTracers(img);   // tw/kw
         ShadowSites shadowSites = FindShadowMap(img);   // ra3 (extra)
+        uint envUpdate = FindUnique(img, EnvUpdatePattern);   // tw/kw
         uint trailLock = FindTrailLock(img);
         SwaySite sway = FindSway(img);
         Cnc3SwaySite sway3 = sway == null ? FindCnc3Sway(img) : null;   // tw/kw
@@ -311,7 +312,7 @@ static class Program
             new { n = "anim2d", ok = anim2d.Count > 0 }, new { n = "models", ok = modelStep != 0 }, new { n = "particles", ok = pfxSite != 0 },
             new { n = "fades", ok = fades.Count > 0 || fx.Fades.Count > 0 }, new { n = "zoom", ok = zoomSite != 0 },
             new { n = "camsteps", ok = fx.CameraStep != 0 }, new { n = "fxframes", ok = fx.Frame5.Count > 0 }, new { n = "throb", ok = fx.Throb != 0 },
-            new { n = "shake", ok = fx.Shake != 0 }, new { n = "traillock", ok = trailLock != 0 }, new { n = "sway", ok = sway != null || sway3 != null }, new { n = "stream", ok = stream != 0 }, new { n = "audio", ok = audioSlot != 0 }, new { n = "floattext", ok = floatText != null }, new { n = "fpsframes", ok = fpsFrames.Count > 0 }, new { n = "blinks", ok = blinks.Sites.Count > 0 }, new { n = "tint", ok = blinks.Tint.Count > 0 }, new { n = "modeltimer", ok = blinks.TimerUpdate != 0 }, new { n = "glow", ok = glow != null }, new { n = "pfxcull", ok = pfxCull != null }, new { n = "clock", ok = clock != null }, new { n = "radarfade", ok = radarFade != null }, new { n = "drawfade", ok = drawFade.Count > 0 }, new { n = "fxdelays", ok = elapsed.Count > 0 }, new { n = "pulse", ok = pulse != null }, new { n = "turrets", ok = turretSite != null }, new { n = "topple", ok = topple != null }, new { n = "offscreenanim", ok = animGate != 0 }, new { n = "tracers", ok = tracers != null }, new { n = "shadowmap", ok = shadowSites != null } };
+            new { n = "shake", ok = fx.Shake != 0 }, new { n = "traillock", ok = trailLock != 0 }, new { n = "sway", ok = sway != null || sway3 != null }, new { n = "stream", ok = stream != 0 }, new { n = "audio", ok = audioSlot != 0 }, new { n = "floattext", ok = floatText != null }, new { n = "fpsframes", ok = fpsFrames.Count > 0 }, new { n = "blinks", ok = blinks.Sites.Count > 0 }, new { n = "tint", ok = blinks.Tint.Count > 0 }, new { n = "modeltimer", ok = blinks.TimerUpdate != 0 }, new { n = "glow", ok = glow != null }, new { n = "pfxcull", ok = pfxCull != null }, new { n = "clock", ok = clock != null }, new { n = "radarfade", ok = radarFade != null }, new { n = "drawfade", ok = drawFade.Count > 0 }, new { n = "fxdelays", ok = elapsed.Count > 0 }, new { n = "pulse", ok = pulse != null }, new { n = "turrets", ok = turretSite != null }, new { n = "topple", ok = topple != null }, new { n = "offscreenanim", ok = animGate != 0 }, new { n = "tracers", ok = tracers != null }, new { n = "shadowmap", ok = shadowSites != null }, new { n = "envgate", ok = envUpdate != 0 } };
         found = "found: " + string.Join(" ", have.Where(h => h.ok).Select(h => h.n)) + " | missing: " + string.Join(" ", have.Where(h => !h.ok).Select(h => h.n));
 
         // +0 fps, +8 particle accum
@@ -381,6 +382,7 @@ static class Program
         if (On("glow") && glow != null && fps > 30) PatchGlow(proc, img, glow, (uint)mem, (uint)mem + 0x1560);   // +1560h..+15C0h
         if (On("fxdelays") && elapsed.Count > 0 && fps > 30) PatchElapsedSites(proc, img, elapsed, (uint)mem, (uint)mem + 0x1500);   // +1500h..+1560h
         if (On("radarfade") && radarFade != null && fps > 30) PatchRadarFade(proc, radarFade, (uint)mem, (uint)mem + 0x14A0);   // +14A0h..+1500h
+        if (On("envgate") && envUpdate != 0 && fps > 30) { uint cl = FindClient(img); if (cl != 0) PatchEnvGate(proc, envUpdate, cl, (uint)mem, (uint)mem + 0x1800); }   // +1800h..+1840h
         if (On("models") && modelStep != 0) Redirect(proc, new List<uint> { modelStep }, (uint)mem + 0x10);   // 1/fps instead of 1/30
         if (On("particles") && throttlePfx && pfxSite != 0) ThrottleParticles(proc, pfxSite, pfxSim, (uint)mem, (uint)mem + 8, (uint)mem + 0x40);
         clockFixed = On("clock") && clock != null && fps > 30;
@@ -414,7 +416,7 @@ static class Program
             (stream != 0 ? " | stream " + hex(new[] { stream }) : "") +
             (audioSlot != 0 ? " | audio " + hex(new[] { audioSlot, audioFn }) : "") +
             (floatText != null ? " | floattext " + hex(new[] { floatText.Add, floatText.Update }) : "") +
-            (fpsFrames.Count > 0 ? " | fpsframes " + hex(fpsFrames) : "") + (radarFade != null ? " | radarfade " + hex(new[] { radarFade.Call, radarFade.Site }) : "") + (drawFade.Count > 0 ? " | drawfade " + hex(drawFade) : "") + (elapsed.Count > 0 ? " | fxdelays " + hex(elapsed) : "") + (glow != null ? " | glow " + hex(new[] { glow.Fn }) : "") + (pfxCull != null ? " | pfxcull " + hex(new[] { pfxCull.Site, pfxCull.Time }) : "") + (tracers != null ? " | tracers " + hex(new[] { tracers.Gate, tracers.Spawn, tracers.Step, tracers.Spacing, tracers.Bullet }) : "") + (shadowSites != null ? " | shadowmap " + hex(new[] { shadowSites.Setter, shadowSites.Update }) + (shadowMapOpt > 0 ? " = " + shadowMapOpt : " (off)") : "") +
+            (fpsFrames.Count > 0 ? " | fpsframes " + hex(fpsFrames) : "") + (radarFade != null ? " | radarfade " + hex(new[] { radarFade.Call, radarFade.Site }) : "") + (drawFade.Count > 0 ? " | drawfade " + hex(drawFade) : "") + (elapsed.Count > 0 ? " | fxdelays " + hex(elapsed) : "") + (glow != null ? " | glow " + hex(new[] { glow.Fn }) : "") + (pfxCull != null ? " | pfxcull " + hex(new[] { pfxCull.Site, pfxCull.Time }) : "") + (tracers != null ? " | tracers " + hex(new[] { tracers.Gate, tracers.Spawn, tracers.Step, tracers.Spacing, tracers.Bullet }) : "") + (envUpdate != 0 ? " | envgate " + hex(new[] { envUpdate }) : "") + (shadowSites != null ? " | shadowmap " + hex(new[] { shadowSites.Setter, shadowSites.Update }) + (shadowMapOpt > 0 ? " = " + shadowMapOpt : " (off)") : "") +
             (blinks.Sites.Count > 0 ? " | blinks " + hex(blinks.Sites) : "") +
             (blinks.Tint.Count > 0 ? " | tint " + hex(blinks.Tint.Concat(new[] { blinks.TintInstall9 }).Concat(blinks.TintLen)) : "") +
             (blinks.TimerUpdate != 0 ? " | modeltimer " + hex(new[] { blinks.TimerInit, blinks.TimerUpdate }) : "") +
@@ -1056,6 +1058,27 @@ static class Program
         Write(proc, t.Step, call(t.Step, step));
         Write(proc, t.Spacing, call(t.Spacing, spacing));
         Write(proc, t.Bullet, call(t.Bullet, bullet));
+    }
+
+    // tw/kw tint envelope update (selection flash, #31): steps per call, runs every drawn frame
+    const string EnvUpdatePattern = "55 8B EC 83 EC 0C 53 56 8B F1 0F BE 46 38 83 E8 00 57";
+
+    static void PatchEnvGate(IntPtr proc, uint fn, uint client, uint fpsVa, uint stubVa)
+    {
+        // run only on drawn frames that start a new 30 hz frame
+        var g = new Asm(stubVa);
+        g.E(0x51, 0x8B, 0x0D); g.D(client);
+        g.E(0x8B, 0x01, 0xFF, 0x50, 0x78, 0x8B, 0xC8);
+        g.E(0x6B, 0xC0, 0x1E, 0x33, 0xD2, 0xF7, 0x35); g.D(fpsVa);
+        g.E(0x50, 0x8D, 0x41, 0xFF);
+        g.E(0x6B, 0xC0, 0x1E, 0x33, 0xD2, 0xF7, 0x35); g.D(fpsVa);
+        g.E(0x5A, 0x59, 0x3B, 0xC2); g.J(0x75, "run");
+        g.E(0xC3);
+        g.L("run");
+        g.E(0x55, 0x8B, 0xEC, 0x83, 0xEC, 0x0C);   // push ebp / mov ebp,esp / sub esp,0Ch
+        g.Rel(0xE9, fn + 6);
+        Write(proc, stubVa, g.Done(0x40));
+        Write(proc, fn, new byte[] { 0xE9 }.Concat(BitConverter.GetBytes(stubVa - (fn + 5))).Concat(new byte[] { 0x90 }).ToArray());
     }
 
     // extra (shadowmap=4096 / 8192)
